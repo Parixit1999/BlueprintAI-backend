@@ -1,14 +1,7 @@
 """HITL checkpoint: apply human corrections, embed, and ingest confirmed chunks."""
+from app.exceptions import AlreadyIngested, FileNotFound
 from app.repositories import ChunkRepository, FileRepository
 from app.services.ai.base import EmbeddingProvider
-
-
-class FileNotFound(Exception):
-    pass
-
-
-class AlreadyIngested(Exception):
-    pass
 
 
 class ReviewService:
@@ -22,9 +15,9 @@ class ReviewService:
     ) -> dict:
         record = self._files.get(file_id)
         if record is None:
-            raise FileNotFound(file_id)
+            raise FileNotFound("File not found")
         if record["status"] == "ingested":
-            raise AlreadyIngested(file_id)
+            raise AlreadyIngested("This file has already been reviewed and ingested.")
 
         ingested = 0
         for i, chunk in enumerate(record["extraction"]):
@@ -40,6 +33,7 @@ class ReviewService:
                 region_type=chunk.get("region_type", "note"),
                 chunk_text=text,
                 bbox=chunk.get("bbox"),
+                page=chunk.get("page", 1),
                 confidence=chunk.get("confidence", "high"),
                 verification_status="corrected" if corrected is not None else "confirmed",
                 original_value=original,

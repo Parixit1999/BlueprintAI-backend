@@ -1,10 +1,10 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 
 from app.dependencies import file_service, render_service
-from app.services.file_service import ExtractionFailed, FileService, UnsupportedFileType
-from app.services.render_service import FileNotFound, RenderFailed, RenderService
+from app.services.file_service import FileService
+from app.services.render_service import RenderService
 
 router = APIRouter(prefix="/files", tags=["files"])
 
@@ -14,13 +14,9 @@ Renderer = Annotated[RenderService, Depends(render_service)]
 
 @router.post("/upload")
 async def upload_file(file: UploadFile, service: Service):
+    """Upload a drawing (DXF, PDF, PNG, JPG); domain errors map to HTTP via the app-level handler."""
     data = await file.read()
-    try:
-        return service.ingest_upload(file.filename or "unnamed", data)
-    except UnsupportedFileType as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    except ExtractionFailed as exc:
-        raise HTTPException(status_code=422, detail=f"Extraction failed: {exc}")
+    return service.ingest_upload(file.filename or "unnamed", data)
 
 
 @router.get("")
@@ -37,11 +33,6 @@ async def get_extraction(file_id: str, service: Service):
 
 
 @router.get("/{file_id}/render")
-async def get_render(file_id: str, renderer: Renderer):
-    """PNG render of the drawing + model-space extents, for the evidence viewer."""
-    try:
-        return renderer.get_render(file_id)
-    except FileNotFound:
-        raise HTTPException(status_code=404, detail="File not found")
-    except RenderFailed as exc:
-        raise HTTPException(status_code=422, detail=f"Render failed: {exc}")
+async def get_render(file_id: str, renderer: Renderer, page: Annotated[int, Query(ge=1)] = 1):
+    """PNG render of one page + its extents, for the evidence viewer."""
+    return renderer.get_render(file_id, page)

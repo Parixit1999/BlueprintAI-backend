@@ -1,10 +1,10 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.dependencies import review_service
-from app.services.review_service import AlreadyIngested, FileNotFound, ReviewService
+from app.services.review_service import ReviewService
 
 router = APIRouter(prefix="/review", tags=["review"])
 
@@ -20,9 +20,5 @@ class ConfirmRequest(BaseModel):
 
 @router.post("/{file_id}/confirm")
 async def confirm_and_ingest(file_id: str, body: ConfirmRequest, service: Service):
-    try:
-        return service.confirm_and_ingest(file_id, body.corrections, body.rejected)
-    except FileNotFound:
-        raise HTTPException(status_code=404, detail="File not found")
-    except AlreadyIngested:
-        raise HTTPException(status_code=409, detail="File already ingested")
+    """Domain errors (not found / already ingested) map to HTTP via the app-level handler."""
+    return service.confirm_and_ingest(file_id, body.corrections, body.rejected)

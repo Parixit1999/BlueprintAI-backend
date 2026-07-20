@@ -90,14 +90,16 @@ class ChunkRepository:
         original_value: str | None,
         corrected_value: str | None,
         embedding: list[float],
+        page: int = 1,
     ) -> None:
         with self._pool.connection() as conn:
             conn.execute(
-                """INSERT INTO chunks (source_file_id, region_type, chunk_text, bbox,
+                """INSERT INTO chunks (source_file_id, page, region_type, chunk_text, bbox,
                        confidence, verification_status, original_value, corrected_value, embedding)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     source_file_id,
+                    page,
                     region_type,
                     chunk_text,
                     bbox,
@@ -113,7 +115,7 @@ class ChunkRepository:
         vector = json.dumps(embedding)
         with self._pool.connection() as conn:
             rows = conn.execute(
-                """SELECT source_file_id, region_type, chunk_text, bbox, image_uri,
+                """SELECT source_file_id, region_type, chunk_text, bbox, image_uri, page,
                           1 - (embedding <=> %s::vector) AS score
                    FROM chunks
                    ORDER BY embedding <=> %s::vector
@@ -127,7 +129,8 @@ class ChunkRepository:
                 "chunk_text": r[2],
                 "bbox": r[3],
                 "image_uri": r[4],
-                "score": round(float(r[5]), 4),
+                "page": r[5],
+                "score": round(float(r[6]), 4),
             }
             for r in rows
         ]

@@ -1,18 +1,12 @@
-"""Upload orchestration: store original -> extract -> persist provisional chunks."""
+"""Upload orchestration: validate -> store original -> extract -> persist chunks."""
 import tempfile
 from pathlib import Path
 
+from app.config import settings
+from app.exceptions import FileTooLarge, UnsupportedFileType
 from app.repositories import FileRepository
 from app.services import extraction
 from app.services.storage import ObjectStorage
-
-
-class UnsupportedFileType(Exception):
-    pass
-
-
-class ExtractionFailed(Exception):
-    pass
 
 
 class FileService:
@@ -24,8 +18,17 @@ class FileService:
         suffix = Path(filename).suffix.lower()
         extractor = extraction.get_extractor(suffix)
         if extractor is None:
+            supported = ", ".join(sorted(extraction.supported_extensions()))
             raise UnsupportedFileType(
-                f"Unsupported file type '{suffix}'. Supported: {sorted(extraction.supported_extensions())}"
+                f"'{suffix or filename}' is not a supported file type. "
+                f"Upload one of: {supported}."
+            )
+        if len(data) == 0:
+            raise UnsupportedFileType("The uploaded file is empty.")
+        if len(data) > settings.max_upload_bytes:
+            raise FileTooLarge(
+                f"File is {len(data) / 1024 / 1024:.1f} MB; the maximum is "
+                f"{settings.max_upload_bytes // (1024 * 1024)} MB."
             )
 
         file_id = self._files.create(filename, suffix.lstrip("."))
@@ -37,9 +40,10 @@ class FileService:
             tmp.flush()
             try:
                 chunks = [c.model_dump(mode="json") for c in extractor.extract(tmp.name)]
-            except Exception as exc:
+            except Exception:
+                # keep no orphaned records for failed extractions
                 self._files.delete(file_id)
-                raise ExtractionFailed(str(exc)) from exc
+                raise
 
         self._files.mark_extracted(file_id, s3_key, chunks)
         return {"file_id": file_id, "filename": filename, "chunks": chunks}

@@ -35,7 +35,7 @@ class FileRepository:
     def get(self, file_id: str) -> dict[str, Any] | None:
         with self._pool.connection() as conn:
             row = conn.execute(
-                "SELECT id, filename, file_type, status, extraction, created_at FROM files WHERE id = %s",
+                "SELECT id, filename, file_type, status, extraction, created_at, s3_key, render FROM files WHERE id = %s",
                 (file_id,),
             ).fetchone()
         if row is None:
@@ -47,7 +47,16 @@ class FileRepository:
             "status": row[3],
             "extraction": row[4] or [],
             "created_at": row[5].isoformat(),
+            "s3_key": row[6],
+            "render": row[7],
         }
+
+    def set_render(self, file_id: str, render: dict[str, Any]) -> None:
+        with self._pool.connection() as conn:
+            conn.execute(
+                "UPDATE files SET render = %s WHERE id = %s",
+                (json.dumps(render), file_id),
+            )
 
     def list_all(self) -> list[dict[str, Any]]:
         with self._pool.connection() as conn:

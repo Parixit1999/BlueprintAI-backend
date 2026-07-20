@@ -24,6 +24,9 @@ class Settings(BaseSettings):
 
     max_upload_bytes: int = 25 * 1024 * 1024  # 25 MB
 
+    # Single-user mode for now; auth later just replaces this per-request.
+    default_user_id: str = "global"
+
     database_url: str = "postgresql://postgres:postgres@localhost:5432/blueprintai"
 
 

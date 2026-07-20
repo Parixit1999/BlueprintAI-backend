@@ -34,3 +34,24 @@ CREATE TABLE IF NOT EXISTS chunks (
 
 CREATE INDEX IF NOT EXISTS chunks_file_idx ON chunks (source_file_id);
 -- Plain top-k for MVP; an ivfflat/hnsw index can be added when volume warrants it.
+
+-- Chat history. user_id defaults to the single global user; real auth later
+-- only needs to start writing real ids here.
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id    text NOT NULL DEFAULT 'global',
+    title      text NOT NULL DEFAULT 'New chat',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id uuid NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    role       text NOT NULL,       -- user | assistant
+    content    text NOT NULL,
+    evidence   jsonb,               -- retrieval references on assistant messages
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS chat_messages_session_idx ON chat_messages (session_id, created_at);

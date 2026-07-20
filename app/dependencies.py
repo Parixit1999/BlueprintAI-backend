@@ -1,7 +1,9 @@
 """FastAPI dependency providers - composition root for services."""
+from app.config import settings
 from app.db import pool
-from app.repositories import ChunkRepository, FileRepository
+from app.repositories import ChatRepository, ChunkRepository, FileRepository, StatsRepository
 from app.services.ai import get_embedding_provider, get_text_generator
+from app.services.chat_service import ChatService
 from app.services.file_service import FileService
 from app.services.query_service import QueryService
 from app.services.render_service import RenderService
@@ -23,3 +25,12 @@ def query_service() -> QueryService:
 
 def render_service() -> RenderService:
     return RenderService(FileRepository(pool), get_storage())
+
+
+def chat_service() -> ChatService:
+    # Single global user until auth arrives; then resolve user_id per request.
+    return ChatService(ChatRepository(pool), query_service(), settings.default_user_id)
+
+
+def stats_repository() -> StatsRepository:
+    return StatsRepository(pool)

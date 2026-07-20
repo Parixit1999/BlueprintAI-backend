@@ -167,6 +167,11 @@ class ChatRepository:
         with self._pool.connection() as conn:
             conn.execute("UPDATE chat_sessions SET updated_at = now() WHERE id = %s", (session_id,))
 
+    def delete_session(self, session_id: str) -> None:
+        # chat_messages cascade via the session_id foreign key
+        with self._pool.connection() as conn:
+            conn.execute("DELETE FROM chat_sessions WHERE id = %s", (session_id,))
+
     def add_message(
         self, session_id: str, role: str, content: str, evidence: list[dict] | None = None
     ) -> dict[str, Any]:

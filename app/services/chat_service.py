@@ -25,6 +25,18 @@ class ChatService:
             raise FileNotFound("Chat session not found")
         return {**session, "messages": self._chats.list_messages(session_id)}
 
+    def rename_session(self, session_id: str, title: str) -> dict:
+        if self._chats.get_session(session_id, self._user_id) is None:
+            raise FileNotFound("Chat session not found")
+        clean = title.strip()[:TITLE_MAX] or "New chat"
+        self._chats.set_title(session_id, clean)
+        return {"session_id": session_id, "title": clean}
+
+    def delete_session(self, session_id: str) -> None:
+        if self._chats.get_session(session_id, self._user_id) is None:
+            raise FileNotFound("Chat session not found")
+        self._chats.delete_session(session_id)
+
     def ask(self, session_id: str, question: str) -> dict:
         session = self._chats.get_session(session_id, self._user_id)
         if session is None:

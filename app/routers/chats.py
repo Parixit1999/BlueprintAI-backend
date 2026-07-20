@@ -15,6 +15,10 @@ class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
 
 
+class RenameRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+
 @router.post("")
 async def create_session(service: Service):
     return service.create_session()
@@ -28,6 +32,16 @@ async def list_sessions(service: Service):
 @router.get("/{session_id}")
 async def get_messages(session_id: str, service: Service):
     return service.get_messages(session_id)
+
+
+@router.patch("/{session_id}")
+async def rename_session(session_id: str, body: RenameRequest, service: Service):
+    return service.rename_session(session_id, body.title)
+
+
+@router.delete("/{session_id}", status_code=204)
+async def delete_session(session_id: str, service: Service):
+    service.delete_session(session_id)
 
 
 @router.post("/{session_id}/messages")

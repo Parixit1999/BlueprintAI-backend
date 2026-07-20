@@ -6,6 +6,10 @@ class Settings(BaseSettings):
 
     aws_region: str = "us-east-1"
     s3_bucket: str = "blueprintai-files"
+    # Set to http://localhost:9000 for local MinIO; leave unset for real S3
+    s3_endpoint_url: str | None = None
+    s3_access_key: str | None = None
+    s3_secret_key: str | None = None
 
     bedrock_vision_model: str = "anthropic.claude-opus-4-8"
     bedrock_text_model: str = "anthropic.claude-opus-4-8"

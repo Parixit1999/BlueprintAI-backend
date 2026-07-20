@@ -7,13 +7,24 @@ from app.config import settings
 from app.exceptions import FileNotFound, FileTooLarge, UnsupportedFileType
 from app.repositories import FileRepository
 from app.services import extraction
+from app.services.ai.base import EmbeddingProvider
 from app.services.storage import ObjectStorage
 
 
 class FileService:
-    def __init__(self, files: FileRepository, storage: ObjectStorage):
+    def __init__(self, files: FileRepository, storage: ObjectStorage, embedder: EmbeddingProvider):
         self._files = files
         self._storage = storage
+        self._embedder = embedder
+
+    def _document_embedding(self, chunks: list[dict]) -> list[float] | None:
+        """One embedding representing the whole document, for semantic
+        duplicate/similarity detection. Built from the extracted text so it
+        exists before ingestion (dedup works at review time)."""
+        texts = [c["chunk_text"] for c in chunks if c.get("chunk_text")]
+        if not texts:
+            return None
+        return self._embedder.embed(" ".join(texts))
 
     def ingest_upload(self, filename: str, data: bytes) -> dict:
         suffix = Path(filename).suffix.lower()
@@ -47,11 +58,12 @@ class FileService:
                 self._files.delete(file_id)
                 raise
 
-        self._files.mark_extracted(file_id, s3_key, chunks)
+        embedding = self._document_embedding(chunks)
+        self._files.mark_extracted(file_id, s3_key, chunks, embedding)
         return {"file_id": file_id, "filename": filename, "chunks": chunks}
 
     def list_files(self) -> list[dict]:
-        return self._files.list_all()
+        return self._files.list_all(settings.duplicate_similarity_threshold)
 
     def get_extraction(self, file_id: str) -> dict | None:
         record = self._files.get(file_id)

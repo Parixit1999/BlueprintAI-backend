@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS files (
     file_type     text NOT NULL,            -- dxf | pdf | image
     s3_key        text NOT NULL,            -- original file location
     status        text NOT NULL DEFAULT 'uploaded',  -- uploaded | extracted | reviewed | ingested
-    content_sha256 text,                    -- hash of the original bytes, for duplicate detection
+    content_sha256 text,                    -- hash of the original bytes (exact-match signal)
+    embedding     vector(1024),             -- document-level embedding for semantic duplicate/similarity detection
     extraction    jsonb,                    -- provisional chunks awaiting HITL review
     render        jsonb,                    -- {s3_key, extents [xmin,ymin,xmax,ymax]} of the PNG render
     created_at    timestamptz NOT NULL DEFAULT now()

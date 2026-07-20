@@ -24,6 +24,11 @@ class Settings(BaseSettings):
 
     max_upload_bytes: int = 25 * 1024 * 1024  # 25 MB
 
+    # Two documents whose embeddings are at least this cosine-similar are
+    # flagged as possible duplicates. Calibrated on real drawings: the same
+    # drawing across formats scores ~0.98, genuinely different parts ~0.59.
+    duplicate_similarity_threshold: float = 0.90
+
     # Single-user mode for now; auth later just replaces this per-request.
     default_user_id: str = "global"
 

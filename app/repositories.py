@@ -18,11 +18,14 @@ class FileRepository:
             ).fetchone()
         return str(row[0])
 
-    def mark_extracted(self, file_id: str, s3_key: str, chunks: list[dict]) -> None:
+    def mark_extracted(
+        self, file_id: str, s3_key: str, chunks: list[dict], embedding: list[float] | None = None
+    ) -> None:
         with self._pool.connection() as conn:
             conn.execute(
-                "UPDATE files SET s3_key = %s, status = 'extracted', extraction = %s WHERE id = %s",
-                (s3_key, json.dumps(chunks), file_id),
+                "UPDATE files SET s3_key = %s, status = 'extracted', extraction = %s, "
+                "embedding = %s WHERE id = %s",
+                (s3_key, json.dumps(chunks), json.dumps(embedding) if embedding else None, file_id),
             )
 
     def mark_ingested(self, file_id: str) -> None:
@@ -76,19 +79,28 @@ class FileRepository:
                 (json.dumps(render), file_id),
             )
 
-    def list_all(self) -> list[dict[str, Any]]:
+    def list_all(self, similarity_threshold: float = 0.90) -> list[dict[str, Any]]:
+        """List documents, each tagged with any other documents whose content is
+        semantically near-identical (cosine similarity >= threshold on the
+        document embedding). Catches the same drawing across file formats, not
+        just byte-identical files."""
         with self._pool.connection() as conn:
             rows = conn.execute(
                 """SELECT f.id, f.filename, f.file_type, f.status, f.created_at,
-                          f.content_sha256, count(c.id)
+                          count(c.id),
+                          (
+                            SELECT json_agg(json_build_object(
+                                     'file_id', o.id, 'filename', o.filename,
+                                     'similarity', round((1 - (f.embedding <=> o.embedding))::numeric, 4))
+                                   ORDER BY f.embedding <=> o.embedding)
+                            FROM files o
+                            WHERE o.id <> f.id AND o.embedding IS NOT NULL
+                              AND (1 - (f.embedding <=> o.embedding)) >= %s
+                          ) AS similar
                    FROM files f LEFT JOIN chunks c ON c.source_file_id = f.id
-                   GROUP BY f.id ORDER BY f.created_at DESC"""
+                   GROUP BY f.id ORDER BY f.created_at DESC""",
+                (similarity_threshold,),
             ).fetchall()
-        # tag files whose content hash appears more than once as duplicates
-        hash_counts: dict[str, int] = {}
-        for r in rows:
-            if r[5]:
-                hash_counts[r[5]] = hash_counts.get(r[5], 0) + 1
         return [
             {
                 "file_id": str(r[0]),
@@ -96,9 +108,9 @@ class FileRepository:
                 "file_type": r[2],
                 "status": r[3],
                 "created_at": r[4].isoformat(),
-                "content_sha256": r[5],
-                "chunk_count": r[6],
-                "is_duplicate": bool(r[5]) and hash_counts.get(r[5], 0) > 1,
+                "chunk_count": r[5],
+                "similar_documents": r[6] or [],
+                "is_duplicate": bool(r[6]),
             }
             for r in rows
         ]

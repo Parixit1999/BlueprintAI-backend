@@ -12,7 +12,7 @@ from app.services.storage import get_storage
 
 
 def file_service() -> FileService:
-    return FileService(FileRepository(pool), get_storage())
+    return FileService(FileRepository(pool), get_storage(), get_embedding_provider())
 
 
 def review_service() -> ReviewService:

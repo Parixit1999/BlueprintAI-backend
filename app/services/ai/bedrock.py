@@ -30,3 +30,21 @@ class BedrockGenerator:
             inferenceConfig={"maxTokens": 1024},
         )
         return resp["output"]["message"]["content"][0]["text"]
+
+
+class BedrockVision:
+    def analyze_image(self, image_bytes: bytes, prompt: str) -> str:
+        resp = _client().converse(
+            modelId=settings.bedrock_vision_model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"image": {"format": "png", "source": {"bytes": image_bytes}}},
+                        {"text": prompt},
+                    ],
+                }
+            ],
+            inferenceConfig={"maxTokens": 4096},
+        )
+        return resp["output"]["message"]["content"][0]["text"]

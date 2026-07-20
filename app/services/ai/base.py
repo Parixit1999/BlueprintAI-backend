@@ -13,3 +13,7 @@ class EmbeddingProvider(Protocol):
 
 class TextGenerator(Protocol):
     def generate(self, system: str, user: str) -> str: ...
+
+
+class VisionProvider(Protocol):
+    def analyze_image(self, image_bytes: bytes, prompt: str) -> str: ...

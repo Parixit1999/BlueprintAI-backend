@@ -36,6 +36,7 @@ class ProvisionalChunk(BaseModel):
     chunk_text: str | None  # null when the source value was unreadable
     bbox: list[float] | None = None
     confidence: Confidence = Confidence.high
+    page: int = 1
 
 
 class ExtractedField(BaseModel):

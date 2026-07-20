@@ -5,6 +5,7 @@ low-confidence for the review UI, never guessed.
 import ezdxf
 from ezdxf import bbox as ezbbox
 
+from app.exceptions import InvalidFile
 from app.schemas import Confidence, ProvisionalChunk, RegionType
 
 
@@ -21,7 +22,14 @@ def _entity_bbox(entity) -> list[float] | None:
 
 class DxfExtractor:
     def extract(self, path: str) -> list[ProvisionalChunk]:
-        doc = ezdxf.readfile(path)
+        try:
+            doc = ezdxf.readfile(path)
+        except Exception:
+            # ezdxf raises DXFError subclasses but also IO/decode errors on garbage input
+            raise InvalidFile(
+                "This file could not be read as a DXF drawing - it appears to be "
+                "corrupt or is not really a DXF file."
+            )
         msp = doc.modelspace()
         chunks: list[ProvisionalChunk] = []
 

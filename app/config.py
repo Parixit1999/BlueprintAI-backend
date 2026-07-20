@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_embed_model: str = "mxbai-embed-large"  # 1024-dim, same as Titan v2
     ollama_text_model: str = "llama3.1:8b"
+    ollama_vision_model: str = "qwen2.5vl:7b"
+
+    max_upload_bytes: int = 25 * 1024 * 1024  # 25 MB
 
     database_url: str = "postgresql://postgres:postgres@localhost:5432/blueprintai"
 

@@ -1,22 +1,14 @@
-"""Evidence rendering: PNG of the drawing + model-space extents for bbox overlay.
+"""Evidence rendering: per-page PNG of the drawing + extents for bbox overlay.
 
-Renders lazily on first request and caches the PNG in object storage, so files
-uploaded before this feature existed work too.
+Renders lazily on first request and caches per page in object storage.
 """
 import tempfile
 from pathlib import Path
 
+from app.exceptions import FileNotFound, RenderFailed
 from app.repositories import FileRepository
-from app.services.rendering import render_dxf
+from app.services.rendering import render_dxf, render_image, render_pdf_page
 from app.services.storage import ObjectStorage
-
-
-class FileNotFound(Exception):
-    pass
-
-
-class RenderFailed(Exception):
-    pass
 
 
 class RenderService:
@@ -24,32 +16,51 @@ class RenderService:
         self._files = files
         self._storage = storage
 
-    def get_render(self, file_id: str) -> dict:
+    def get_render(self, file_id: str, page: int = 1) -> dict:
         record = self._files.get(file_id)
         if record is None:
-            raise FileNotFound(file_id)
+            raise FileNotFound("File not found")
 
-        render = record["render"]
-        if render is None:
-            render = self._generate(record)
-            self._files.set_render(file_id, render)
+        pages = self._page_map(record)
+        entry = pages.get(str(page))
+        if entry is None:
+            entry = self._generate(record, page)
+            pages[str(page)] = entry
+            self._files.set_render(file_id, {"pages": pages})
 
         return {
             "file_id": file_id,
-            "url": self._storage.presigned_url(render["s3_key"]),
-            "extents": render["extents"],
+            "page": page,
+            "url": self._storage.presigned_url(entry["s3_key"]),
+            "extents": entry["extents"],
         }
 
-    def _generate(self, record: dict) -> dict:
+    @staticmethod
+    def _page_map(record: dict) -> dict:
+        render = record["render"] or {}
+        if "pages" in render:
+            return dict(render["pages"])
+        if "s3_key" in render:  # legacy single-page format
+            return {"1": render}
+        return {}
+
+    def _generate(self, record: dict, page: int) -> dict:
         data = self._storage.download_bytes(record["s3_key"])
         suffix = Path(record["filename"]).suffix.lower()
         with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
             tmp.write(data)
             tmp.flush()
             try:
-                png, extents = render_dxf(tmp.name)
+                if suffix == ".dxf":
+                    png, extents = render_dxf(tmp.name)
+                elif suffix == ".pdf":
+                    png, extents = render_pdf_page(tmp.name, page)
+                else:
+                    png, extents = render_image(tmp.name)
+            except RenderFailed:
+                raise
             except Exception as exc:
-                raise RenderFailed(str(exc)) from exc
-        s3_key = f"renders/{record['file_id']}.png"
+                raise RenderFailed(f"Could not render this drawing: {exc}") from exc
+        s3_key = f"renders/{record['file_id']}_p{page}.png"
         self._storage.upload_bytes(png, s3_key, content_type="image/png")
         return {"s3_key": s3_key, "extents": extents}

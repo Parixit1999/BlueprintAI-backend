@@ -278,10 +278,11 @@ class ChunkRepository:
         vector = json.dumps(embedding)
         with self._pool.connection() as conn:
             rows = conn.execute(
-                """SELECT source_file_id, region_type, chunk_text, bbox, image_uri, page,
-                          1 - (embedding <=> %s::vector) AS score
-                   FROM chunks
-                   ORDER BY embedding <=> %s::vector
+                """SELECT c.source_file_id, c.region_type, c.chunk_text, c.bbox,
+                          c.image_uri, c.page, f.filename,
+                          1 - (c.embedding <=> %s::vector) AS score
+                   FROM chunks c JOIN files f ON f.id = c.source_file_id
+                   ORDER BY c.embedding <=> %s::vector
                    LIMIT %s""",
                 (vector, vector, top_k),
             ).fetchall()
@@ -293,7 +294,8 @@ class ChunkRepository:
                 "bbox": r[3],
                 "image_uri": r[4],
                 "page": r[5],
-                "score": round(float(r[6]), 4),
+                "filename": r[6],
+                "score": round(float(r[7]), 4),
             }
             for r in rows
         ]

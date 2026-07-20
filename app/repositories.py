@@ -9,11 +9,12 @@ class FileRepository:
     def __init__(self, pool: ConnectionPool):
         self._pool = pool
 
-    def create(self, filename: str, file_type: str) -> str:
+    def create(self, filename: str, file_type: str, content_sha256: str | None = None) -> str:
         with self._pool.connection() as conn:
             row = conn.execute(
-                "INSERT INTO files (filename, file_type, s3_key) VALUES (%s, %s, 'pending') RETURNING id",
-                (filename, file_type),
+                "INSERT INTO files (filename, file_type, s3_key, content_sha256) "
+                "VALUES (%s, %s, 'pending', %s) RETURNING id",
+                (filename, file_type, content_sha256),
             ).fetchone()
         return str(row[0])
 
@@ -35,7 +36,8 @@ class FileRepository:
     def get(self, file_id: str) -> dict[str, Any] | None:
         with self._pool.connection() as conn:
             row = conn.execute(
-                "SELECT id, filename, file_type, status, extraction, created_at, s3_key, render FROM files WHERE id = %s",
+                "SELECT id, filename, file_type, status, extraction, created_at, s3_key, render, content_sha256 "
+                "FROM files WHERE id = %s",
                 (file_id,),
             ).fetchone()
         if row is None:
@@ -49,7 +51,23 @@ class FileRepository:
             "created_at": row[5].isoformat(),
             "s3_key": row[6],
             "render": row[7],
+            "content_sha256": row[8],
         }
+
+    def list_render_keys(self, file_id: str) -> list[str]:
+        """Every object-storage key produced for a file: the original plus any
+        per-page renders. Used to clean up storage on delete."""
+        record = self.get(file_id)
+        if record is None:
+            return []
+        keys = [record["s3_key"]] if record["s3_key"] and record["s3_key"] != "pending" else []
+        render = record["render"] or {}
+        for entry in render.get("pages", {}).values():
+            if entry.get("s3_key"):
+                keys.append(entry["s3_key"])
+        if "s3_key" in render:  # legacy single-page format
+            keys.append(render["s3_key"])
+        return keys
 
     def set_render(self, file_id: str, render: dict[str, Any]) -> None:
         with self._pool.connection() as conn:
@@ -61,8 +79,16 @@ class FileRepository:
     def list_all(self) -> list[dict[str, Any]]:
         with self._pool.connection() as conn:
             rows = conn.execute(
-                "SELECT id, filename, file_type, status, created_at FROM files ORDER BY created_at DESC"
+                """SELECT f.id, f.filename, f.file_type, f.status, f.created_at,
+                          f.content_sha256, count(c.id)
+                   FROM files f LEFT JOIN chunks c ON c.source_file_id = f.id
+                   GROUP BY f.id ORDER BY f.created_at DESC"""
             ).fetchall()
+        # tag files whose content hash appears more than once as duplicates
+        hash_counts: dict[str, int] = {}
+        for r in rows:
+            if r[5]:
+                hash_counts[r[5]] = hash_counts.get(r[5], 0) + 1
         return [
             {
                 "file_id": str(r[0]),
@@ -70,6 +96,9 @@ class FileRepository:
                 "file_type": r[2],
                 "status": r[3],
                 "created_at": r[4].isoformat(),
+                "content_sha256": r[5],
+                "chunk_count": r[6],
+                "is_duplicate": bool(r[5]) and hash_counts.get(r[5], 0) > 1,
             }
             for r in rows
         ]

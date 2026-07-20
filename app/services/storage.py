@@ -11,6 +11,7 @@ from app.config import settings
 class ObjectStorage(Protocol):
     def upload_bytes(self, data: bytes, key: str, content_type: str = ...) -> str: ...
     def download_bytes(self, key: str) -> bytes: ...
+    def delete_bytes(self, key: str) -> None: ...
     def presigned_url(self, key: str, expires: int = ...) -> str: ...
 
 
@@ -34,6 +35,9 @@ class S3ObjectStorage:
 
     def download_bytes(self, key: str) -> bytes:
         return self._client.get_object(Bucket=self._bucket, Key=key)["Body"].read()
+
+    def delete_bytes(self, key: str) -> None:
+        self._client.delete_object(Bucket=self._bucket, Key=key)
 
     def presigned_url(self, key: str, expires: int = 3600) -> str:
         return self._client.generate_presigned_url(

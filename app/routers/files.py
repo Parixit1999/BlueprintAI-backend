@@ -36,3 +36,9 @@ async def get_extraction(file_id: str, service: Service):
 async def get_render(file_id: str, renderer: Renderer, page: Annotated[int, Query(ge=1)] = 1):
     """PNG render of one page + its extents, for the evidence viewer."""
     return renderer.get_render(file_id, page)
+
+
+@router.delete("/{file_id}", status_code=204)
+async def delete_file(file_id: str, service: Service):
+    """Delete a document, its chunks, and its stored files. Domain errors map via the app handler."""
+    service.delete_file(file_id)

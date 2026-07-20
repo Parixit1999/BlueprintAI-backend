@@ -1,9 +1,10 @@
 """Upload orchestration: validate -> store original -> extract -> persist chunks."""
+import hashlib
 import tempfile
 from pathlib import Path
 
 from app.config import settings
-from app.exceptions import FileTooLarge, UnsupportedFileType
+from app.exceptions import FileNotFound, FileTooLarge, UnsupportedFileType
 from app.repositories import FileRepository
 from app.services import extraction
 from app.services.storage import ObjectStorage
@@ -31,7 +32,8 @@ class FileService:
                 f"{settings.max_upload_bytes // (1024 * 1024)} MB."
             )
 
-        file_id = self._files.create(filename, suffix.lstrip("."))
+        content_sha256 = hashlib.sha256(data).hexdigest()
+        file_id = self._files.create(filename, suffix.lstrip("."), content_sha256)
         s3_key = f"originals/{file_id}/{filename}"
         self._storage.upload_bytes(data, s3_key)
 
@@ -56,3 +58,16 @@ class FileService:
         if record is None:
             return None
         return {"file_id": file_id, "status": record["status"], "chunks": record["extraction"]}
+
+    def delete_file(self, file_id: str) -> None:
+        record = self._files.get(file_id)
+        if record is None:
+            raise FileNotFound("Document not found")
+        # remove stored objects first; ignore missing keys so a partial state
+        # still deletes cleanly. Chunks cascade via the DB foreign key.
+        for key in self._files.list_render_keys(file_id):
+            try:
+                self._storage.delete_bytes(key)
+            except Exception:
+                pass
+        self._files.delete(file_id)

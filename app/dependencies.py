@@ -4,6 +4,7 @@ from app.repositories import ChunkRepository, FileRepository
 from app.services.ai import get_embedding_provider, get_text_generator
 from app.services.file_service import FileService
 from app.services.query_service import QueryService
+from app.services.render_service import RenderService
 from app.services.review_service import ReviewService
 from app.services.storage import get_storage
 
@@ -18,3 +19,7 @@ def review_service() -> ReviewService:
 
 def query_service() -> QueryService:
     return QueryService(ChunkRepository(pool), get_embedding_provider(), get_text_generator())
+
+
+def render_service() -> RenderService:
+    return RenderService(FileRepository(pool), get_storage())

@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS files (
     file_type     text NOT NULL,            -- dxf | pdf | image
     s3_key        text NOT NULL,            -- original file location
     status        text NOT NULL DEFAULT 'uploaded',  -- uploaded | extracted | reviewed | ingested
+    extraction    jsonb,                    -- provisional chunks awaiting HITL review
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 

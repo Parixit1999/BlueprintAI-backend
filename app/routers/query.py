@@ -1,11 +1,21 @@
-from fastapi import APIRouter, HTTPException
+from typing import Annotated
 
-from app.schemas import QueryRequest, QueryResponse
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+
+from app.dependencies import query_service
+from app.services.query_service import QueryService
 
 router = APIRouter(prefix="/query", tags=["query"])
 
+Service = Annotated[QueryService, Depends(query_service)]
 
-@router.post("", response_model=QueryResponse)
-async def query(request: QueryRequest):
-    """RAG: embed question -> top-k retrieval -> Bedrock generation -> answer + evidence crops."""
-    raise HTTPException(status_code=501, detail="Not implemented: Day 5 — retrieve + generate")
+
+class QueryRequest(BaseModel):
+    question: str
+    top_k: int = 5
+
+
+@router.post("")
+async def query(request: QueryRequest, service: Service):
+    return service.ask(request.question, request.top_k)

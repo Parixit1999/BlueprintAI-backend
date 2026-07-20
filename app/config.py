@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     bedrock_text_model: str = "anthropic.claude-opus-4-8"
     bedrock_embed_model: str = "amazon.titan-embed-text-v2:0"
 
+    # "ollama" (local) or "bedrock" (AWS) — controls embeddings + generation
+    ai_provider: str = "ollama"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_embed_model: str = "mxbai-embed-large"  # 1024-dim, same as Titan v2
+    ollama_text_model: str = "llama3.1:8b"
+
     database_url: str = "postgresql://postgres:postgres@localhost:5432/blueprintai"
 
 

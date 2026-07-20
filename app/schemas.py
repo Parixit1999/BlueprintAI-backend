@@ -29,6 +29,15 @@ class RegionType(str, Enum):
     view = "view"
 
 
+class ProvisionalChunk(BaseModel):
+    """One extracted region awaiting HITL review, before ingestion."""
+
+    region_type: RegionType
+    chunk_text: str | None  # null when the source value was unreadable
+    bbox: list[float] | None = None
+    confidence: Confidence = Confidence.high
+
+
 class ExtractedField(BaseModel):
     """A single extracted value with provenance and confidence."""
 

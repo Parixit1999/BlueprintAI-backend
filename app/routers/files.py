@@ -3,13 +3,15 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 
-from app.dependencies import file_service, render_service
+from app.dependencies import drawing_service, file_service, render_service
 from app.services.file_service import FileService
+from app.services.project_service import DrawingService
 from app.services.render_service import RenderService
 
 router = APIRouter(prefix="/files", tags=["files"])
 
 Service = Annotated[FileService, Depends(file_service)]
+Drawings = Annotated[DrawingService, Depends(drawing_service)]
 Renderer = Annotated[RenderService, Depends(render_service)]
 
 
@@ -17,17 +19,21 @@ Renderer = Annotated[RenderService, Depends(render_service)]
 async def upload_file(
     file: UploadFile,
     service: Service,
+    drawings: Drawings,
     folder_id: Annotated[str | None, Form()] = None,
 ):
     """Upload a drawing (DXF, PDF, PNG, JPG), optionally into a folder; domain
-    errors map to HTTP via the app-level handler."""
+    errors map to HTTP via the app-level handler. After extraction, the matcher
+    suggests (and, on an exact unique DWG match, auto-assigns) the drawing."""
     data = await file.read()
     # Extraction is slow and blocking (vision/LLM calls, DB writes). Run it in a
     # worker thread so a single in-progress upload can't freeze the event loop
     # and stall every other request (document list, chat, etc.).
-    return await run_in_threadpool(
+    result = await run_in_threadpool(
         service.ingest_upload, file.filename or "unnamed", data, folder_id
     )
+    match = await run_in_threadpool(drawings.suggest_and_maybe_assign, result["file_id"])
+    return {**result, **match}
 
 
 # The handlers below do only synchronous, blocking work (DB queries, rendering),
@@ -53,10 +59,12 @@ def get_render(file_id: str, renderer: Renderer, page: Annotated[int, Query(ge=1
 
 
 @router.post("/{file_id}/retry")
-def retry_extraction(file_id: str, service: Service):
+def retry_extraction(file_id: str, service: Service, drawings: Drawings):
     """Re-run extraction on a failed upload from the stored original. Sync def:
     extraction is blocking, so it runs in the worker threadpool."""
-    return service.retry_extraction(file_id)
+    result = service.retry_extraction(file_id)
+    match = drawings.suggest_and_maybe_assign(file_id)
+    return {**result, **match}
 
 
 @router.delete("/{file_id}", status_code=204)

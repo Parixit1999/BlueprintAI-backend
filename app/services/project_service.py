@@ -184,18 +184,55 @@ class DrawingService:
         if record is None:
             raise FileNotFound("File not found")
         filename = record["filename"]
+        # "information found within the actual file content": the extracted
+        # region texts (title blocks especially) carry DWG/project signals even
+        # when the filename is meaningless (scan0001.png)
+        content_texts = [
+            c.get("chunk_text") for c in (record.get("extraction") or []) if c.get("chunk_text")
+        ]
         parsed = matching.parse_filename(filename)
         return {
             "file_id": file_id,
             "filename": filename,
             "parsed": parsed,
+            "content_signals": matching.parse_content(content_texts),
             "project_suggestions": matching.suggest_projects(
-                filename, self._projects.list_all()
+                filename, self._projects.list_all(), content_texts
             ),
             "drawing_suggestions": matching.suggest_drawings(
-                filename, self._drawings.search_registry()
+                filename, self._drawings.search_registry(), content_texts
             ),
         }
+
+    # Auto-assign gate: only an EXACT normalized DWG-number match (score 0.95,
+    # from filename or content), and only when that number maps to exactly one
+    # drawing - version groups share numbers, and picking a version is a human
+    # decision. Everything weaker stays a suggestion.
+    AUTO_ASSIGN_SCORE = 0.95
+
+    def suggest_and_maybe_assign(self, file_id: str) -> dict:
+        """Post-extraction hook: compute suggestions and auto-assign when the
+        gate passes. Returns {auto_assignment, suggestions} for the upload UI."""
+        suggestions = self.suggestions_for_file(file_id)
+        exact = [
+            d for d in suggestions["drawing_suggestions"]
+            if d["score"] >= self.AUTO_ASSIGN_SCORE
+        ]
+        exact_ids = {d["drawing_id"] for d in exact}
+        auto = None
+        if len(exact_ids) == 1:
+            target = exact[0]
+            record = self._files.get(file_id)
+            sheet = matching.parse_filename(record["filename"])["sheet_number"]
+            self._drawings.attach_file(file_id, target["drawing_id"], sheet, auto=True)
+            auto = {
+                "drawing_id": target["drawing_id"],
+                "dwg_number": target["dwg_number"],
+                "project_name": target.get("project_name"),
+                "sheet_number": sheet,
+                "reason": target["reason"],
+            }
+        return {"auto_assignment": auto, "suggestions": suggestions}
 
     def assign_file(
         self,

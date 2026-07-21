@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS files (
     drawing_id    uuid REFERENCES drawings(id) ON DELETE SET NULL,  -- the logical drawing this file belongs to
     sheet_number  text,                     -- e.g. "23" for "SHT 23", or "6 of 31"
     folder_id     uuid REFERENCES folders(id) ON DELETE SET NULL,   -- file-manager location (null = root)
+    auto_assigned boolean NOT NULL DEFAULT false,  -- drawing assignment made automatically (exact DWG match)
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 

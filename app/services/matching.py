@@ -42,6 +42,29 @@ def parse_filename(filename: str) -> dict:
     return out
 
 
+def parse_content(texts: list[str]) -> dict:
+    """Extract DWG-number and project-number signals from a file's extracted
+    region text (title blocks especially) - 'information found within the
+    actual file content'. Essential for scans with meaningless filenames."""
+    out: dict = {"dwg_candidates": [], "project_numbers": []}
+    seen_norms: set[str] = set()
+    for text in texts[:200]:
+        if not text:
+            continue
+        for m in _DWG_RE.finditer(text):
+            seq, fac = m.group(1), m.group(2)
+            norm = normalize_dwg(seq, fac)
+            if norm not in seen_norms:
+                seen_norms.add(norm)
+                out["dwg_candidates"].append(
+                    {"seq": int(seq), "facility": int(fac) if fac else None, "norm": norm}
+                )
+        for m in _PJ_RE.finditer(text):
+            if m.group(1) not in out["project_numbers"]:
+                out["project_numbers"].append(m.group(1))
+    return out
+
+
 def _tokens(text: str) -> list[str]:
     return [t for t in re.split(r"[^a-z0-9]+", text.lower()) if t and t not in _STOPWORDS]
 
@@ -51,13 +74,19 @@ def _initials(name: str) -> str:
     return "".join(w[0] for w in words) if len(words) >= 2 else ""
 
 
-def suggest_projects(filename: str, projects: list[dict]) -> list[dict]:
+def suggest_projects(
+    filename: str, projects: list[dict], content_texts: list[str] | None = None
+) -> list[dict]:
     """Rank projects a file plausibly belongs to. Signals, strongest first:
-    explicit pj#### number, full name containment, token overlap, initials
-    ("Project Alpha Gamma" ~ "AG")."""
+    explicit pj#### number (filename or content), full name containment
+    (filename or content), token overlap, initials ("Project Alpha Gamma" ~
+    "AG"). Content signals come from the file's extracted regions."""
     parsed = parse_filename(filename)
+    content = parse_content(content_texts or [])
     fname_tokens = set(_tokens(parsed["stem"]))
     fname_compact = "".join(_tokens(parsed["stem"]))
+    content_blob = " ".join(content_texts or [])
+    content_compact = "".join(_tokens(content_blob))
     suggestions = []
 
     for p in projects:
@@ -65,12 +94,16 @@ def suggest_projects(filename: str, projects: list[dict]) -> list[dict]:
 
         if p.get("number") and p["number"] in parsed["project_numbers"]:
             best = (0.95, f"filename contains project number pj{p['number']}")
+        elif p.get("number") and p["number"] in content["project_numbers"]:
+            best = (0.95, f"the drawing content contains project number {p['number']}")
 
         name_tokens = [t for t in _tokens(p["name"]) if not t.isdigit()]
         if not best and name_tokens:
             name_compact = "".join(name_tokens)
             if name_compact and name_compact in fname_compact:
                 best = (0.9, "filename contains the full project name")
+            elif name_compact and content_compact and name_compact in content_compact:
+                best = (0.85, "the drawing content contains the project name")
             else:
                 overlap = sum(1 for t in name_tokens if t in fname_tokens)
                 if overlap and overlap / len(name_tokens) >= 0.5:
@@ -97,27 +130,35 @@ def suggest_projects(filename: str, projects: list[dict]) -> list[dict]:
     return suggestions[:5]
 
 
-def suggest_drawings(filename: str, registry: list[dict]) -> list[dict]:
+def suggest_drawings(
+    filename: str, registry: list[dict], content_texts: list[str] | None = None
+) -> list[dict]:
     """Rank registry drawings this file is plausibly a sheet/version of, by DWG
-    number: exact normalized match, then sequence-only match (facility code
-    absent or different in the filename)."""
+    number found in the filename OR in the file's extracted content (title
+    blocks): exact normalized match, then sequence-only match."""
     parsed = parse_filename(filename)
-    if not parsed["dwg_candidates"]:
+    candidates = [(c, "filename") for c in parsed["dwg_candidates"]]
+    if content_texts:
+        seen = {c["norm"] for c in parsed["dwg_candidates"]}
+        for c in parse_content(content_texts)["dwg_candidates"]:
+            if c["norm"] not in seen:
+                candidates.append((c, "the drawing content"))
+    if not candidates:
         return []
 
     suggestions = []
-    for cand in parsed["dwg_candidates"]:
+    for cand, source in candidates:
         for d in registry:
             norm = d.get("dwg_number_norm") or ""
             if not norm:
                 continue
             score_reason = None
             if norm == cand["norm"]:
-                score_reason = (0.95, f"DWG number {d['dwg_number']} matches the filename exactly")
+                score_reason = (0.95, f"DWG number {d['dwg_number']} matches {source} exactly")
             elif cand["facility"] is None and norm.startswith(f"{cand['seq']}-W"):
-                score_reason = (0.75, f"drawing sequence {cand['seq']} matches (facility code missing in filename)")
+                score_reason = (0.75, f"drawing sequence {cand['seq']} matches {source} (facility code missing)")
             elif norm.split("-")[0] == str(cand["seq"]):
-                score_reason = (0.6, f"drawing sequence {cand['seq']} matches")
+                score_reason = (0.6, f"drawing sequence {cand['seq']} matches {source}")
             if score_reason:
                 suggestions.append(
                     {

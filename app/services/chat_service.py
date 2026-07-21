@@ -111,3 +111,51 @@ class ChatService:
             self._chats.touch(session_id)
 
         return {"user_message": user_msg, "assistant_message": assistant_msg}
+
+    def ask_stream(self, session_id: str, question: str, project_id: str | None = None):
+        """Streaming variant of ask(): yields (event, data) tuples.
+
+        Retrieval finishes before generation starts, so the evidence goes out
+        FIRST (`meta` event) and the answer text streams after it (`token`
+        events) - the user sees where the answer comes from while it is still
+        being written. The assistant message is stored only once generation
+        completes, so a failed stream leaves no half-answer in the session.
+        """
+        session = self._chats.get_session(session_id, self._user_id)
+        if session is None:
+            raise FileNotFound("Chat session not found")
+
+        history = self._chats.list_messages(session_id)
+        user_msg = self._chats.add_message(session_id, "user", question)
+        plan = self._query.plan(question, project_id=project_id, history=history)
+        yield "meta", {
+            "user_message": user_msg,
+            "evidence": plan["evidence"],
+            "version_context": plan.get("version_context"),
+            "multi_drawing": plan.get("multi_drawing", False),
+        }
+
+        answer = plan["answer"]  # canned (no-match) answers skip generation
+        if answer is not None:
+            yield "token", {"t": answer}
+        else:
+            parts: list[str] = []
+            try:
+                for piece in self._query.stream(plan["prompt"]):
+                    parts.append(piece)
+                    yield "token", {"t": piece}
+            except Exception as exc:  # surface mid-generation failures to the UI
+                yield "error", {"detail": f"Generation failed: {exc}"}
+                return
+            answer = "".join(parts)
+
+        assistant_msg = self._chats.add_message(
+            session_id, "assistant", answer, plan["evidence"],
+            plan.get("version_context"),
+        )
+        if session["title"] == "New chat":
+            title = question[:TITLE_MAX] + ("…" if len(question) > TITLE_MAX else "")
+            self._chats.set_title(session_id, title)
+        else:
+            self._chats.touch(session_id)
+        yield "done", {"assistant_message": assistant_msg}

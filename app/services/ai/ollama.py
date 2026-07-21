@@ -9,14 +9,14 @@ from app.config import settings
 from app.exceptions import ExtractionFailed, VisionUnavailable
 
 
-def _stream_chat(payload: dict, json_format: bool = False) -> str:
-    """POST to Ollama /api/chat with stream=True and concatenate the message
-    content. Streaming matters for slow local models: with a single non-streamed
-    response the read timeout must cover the ENTIRE generation, so a long answer
-    (e.g. a detailed scanned drawing) trips httpx.ReadTimeout and the whole
-    request fails. Streaming makes the timeout a per-chunk gap instead, so a slow
-    but progressing generation completes. The timeout below is that per-chunk gap
-    (also covers model load + time-to-first-token)."""
+def _iter_chat(payload: dict, json_format: bool = False):
+    """POST to Ollama /api/chat with stream=True, yielding message content as
+    it arrives. Streaming matters for slow local models: with a single
+    non-streamed response the read timeout must cover the ENTIRE generation, so
+    a long answer (e.g. a detailed scanned drawing) trips httpx.ReadTimeout and
+    the whole request fails. Streaming makes the timeout a per-chunk gap instead,
+    so a slow but progressing generation completes. The timeout below is that
+    per-chunk gap (also covers model load + time-to-first-token)."""
     payload = {**payload, "stream": True}
     if json_format:
         # Ollama-enforced valid JSON output - llama3.2-vision ignores prompt-level
@@ -32,15 +32,19 @@ def _stream_chat(payload: dict, json_format: bool = False) -> str:
                 f"Model '{payload['model']}' is not installed. Run: ollama pull {payload['model']}"
             )
         resp.raise_for_status()
-        parts = []
         for line in resp.iter_lines():
             if not line:
                 continue
             chunk = json.loads(line)
-            parts.append(chunk.get("message", {}).get("content", ""))
+            piece = chunk.get("message", {}).get("content", "")
+            if piece:
+                yield piece
             if chunk.get("done"):
                 break
-        return "".join(parts)
+
+
+def _stream_chat(payload: dict, json_format: bool = False) -> str:
+    return "".join(_iter_chat(payload, json_format))
 
 
 class OllamaEmbedding:
@@ -55,16 +59,21 @@ class OllamaEmbedding:
 
 
 class OllamaGenerator:
+    @staticmethod
+    def _payload(system: str, user: str) -> dict:
+        return {
+            "model": settings.ollama_text_model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        }
+
     def generate(self, system: str, user: str) -> str:
-        return _stream_chat(
-            {
-                "model": settings.ollama_text_model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-            }
-        )
+        return _stream_chat(self._payload(system, user))
+
+    def generate_stream(self, system: str, user: str):
+        yield from _iter_chat(self._payload(system, user))
 
 
 class OllamaVision:

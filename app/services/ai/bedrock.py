@@ -31,6 +31,25 @@ class BedrockGenerator:
         )
         return resp["output"]["message"]["content"][0]["text"]
 
+    def generate_stream(self, system: str, user: str):
+        """converse_stream yields deltas as Bedrock produces them. Falls back
+        to a single whole-answer chunk if the streaming API errors, so the
+        chat contract holds either way. Untestable until the AWS account is
+        unblocked - verify at migration."""
+        try:
+            resp = _client().converse_stream(
+                modelId=settings.bedrock_text_model,
+                system=[{"text": system}],
+                messages=[{"role": "user", "content": [{"text": user}]}],
+                inferenceConfig={"maxTokens": 1024},
+            )
+            for event in resp["stream"]:
+                delta = event.get("contentBlockDelta", {}).get("delta", {})
+                if "text" in delta:
+                    yield delta["text"]
+        except Exception:
+            yield self.generate(system, user)
+
 
 class BedrockVision:
     def analyze_image(self, image_bytes: bytes, prompt: str) -> str:

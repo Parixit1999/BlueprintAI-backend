@@ -846,15 +846,47 @@ class StatsRepository:
             questions = conn.execute(
                 "SELECT count(*) FROM chat_messages WHERE role = 'user'"
             ).fetchone()[0]
+            projects = conn.execute("SELECT count(*) FROM projects").fetchone()[0]
+            drawings = conn.execute("SELECT count(*) FROM drawings").fetchone()[0]
+            sets = conn.execute("SELECT count(*) FROM drawing_sets").fetchone()[0]
+            unassigned = conn.execute(
+                "SELECT count(*) FROM files WHERE drawing_id IS NULL"
+            ).fetchone()[0]
+            feedback = dict(
+                conn.execute(
+                    "SELECT rating, count(*) FROM answer_feedback GROUP BY rating"
+                ).fetchall()
+            )
+            # top projects by drawing count, for the dashboard breakdown
+            per_project = conn.execute(
+                """SELECT p.id, p.name, p.number, count(d.id) AS drawings
+                   FROM projects p LEFT JOIN drawings d ON d.project_id = p.id
+                   GROUP BY p.id ORDER BY drawings DESC, p.name LIMIT 8"""
+            ).fetchall()
         return {
             "documents_total": sum(files_by_status.values()),
             "documents_by_status": files_by_status,
             "documents_by_type": files_by_type,
+            "documents_unassigned": unassigned,
             "chunks_total": chunks_total,
             "chunks_by_confidence": chunks_by_confidence,
             "chunks_corrected": corrected,
             "chat_sessions": sessions,
             "questions_asked": questions,
+            "projects_total": projects,
+            "drawings_total": drawings,
+            "sets_total": sets,
+            "feedback_helpful": feedback.get(1, 0),
+            "feedback_unhelpful": feedback.get(-1, 0),
+            "drawings_per_project": [
+                {
+                    "project_id": str(r[0]),
+                    "name": r[1],
+                    "number": r[2],
+                    "drawings": r[3],
+                }
+                for r in per_project
+            ],
         }
 
 

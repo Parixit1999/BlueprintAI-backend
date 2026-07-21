@@ -97,7 +97,7 @@ class FileRepository:
         with self._pool.connection() as conn:
             rows = conn.execute(
                 """SELECT f.id, f.filename, f.file_type, f.status, f.created_at,
-                          f.error, count(c.id),
+                          f.error, f.drawing_id, d.dwg_number, count(c.id),
                           (
                             SELECT json_agg(json_build_object(
                                      'file_id', o.id, 'filename', o.filename,
@@ -107,8 +107,10 @@ class FileRepository:
                             WHERE o.id <> f.id AND o.embedding IS NOT NULL
                               AND (1 - (f.embedding <=> o.embedding)) >= %s
                           ) AS similar
-                   FROM files f LEFT JOIN chunks c ON c.source_file_id = f.id
-                   GROUP BY f.id ORDER BY f.created_at DESC""",
+                   FROM files f
+                        LEFT JOIN chunks c ON c.source_file_id = f.id
+                        LEFT JOIN drawings d ON f.drawing_id = d.id
+                   GROUP BY f.id, d.dwg_number ORDER BY f.created_at DESC""",
                 (similarity_threshold,),
             ).fetchall()
         return [
@@ -119,9 +121,11 @@ class FileRepository:
                 "status": r[3],
                 "created_at": r[4].isoformat(),
                 "error": r[5],
-                "chunk_count": r[6],
-                "similar_documents": r[7] or [],
-                "is_duplicate": bool(r[7]),
+                "drawing_id": str(r[6]) if r[6] else None,
+                "dwg_number": r[7],
+                "chunk_count": r[8],
+                "similar_documents": r[9] or [],
+                "is_duplicate": bool(r[9]),
             }
             for r in rows
         ]

@@ -566,26 +566,36 @@ class ChatRepository:
             conn.execute("DELETE FROM chat_sessions WHERE id = %s", (session_id,))
 
     def add_message(
-        self, session_id: str, role: str, content: str, evidence: list[dict] | None = None
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        evidence: list[dict] | None = None,
+        version_context: dict | None = None,
     ) -> dict[str, Any]:
         with self._pool.connection() as conn:
             row = conn.execute(
-                """INSERT INTO chat_messages (session_id, role, content, evidence)
-                   VALUES (%s, %s, %s, %s) RETURNING id, created_at""",
-                (session_id, role, content, json.dumps(evidence) if evidence is not None else None),
+                """INSERT INTO chat_messages (session_id, role, content, evidence, version_context)
+                   VALUES (%s, %s, %s, %s, %s) RETURNING id, created_at""",
+                (
+                    session_id, role, content,
+                    json.dumps(evidence) if evidence is not None else None,
+                    json.dumps(version_context) if version_context is not None else None,
+                ),
             ).fetchone()
         return {
             "message_id": str(row[0]),
             "role": role,
             "content": content,
             "evidence": evidence,
+            "version_context": version_context,
             "created_at": row[1].isoformat(),
         }
 
     def list_messages(self, session_id: str) -> list[dict[str, Any]]:
         with self._pool.connection() as conn:
             rows = conn.execute(
-                """SELECT id, role, content, evidence, created_at
+                """SELECT id, role, content, evidence, version_context, created_at
                    FROM chat_messages WHERE session_id = %s ORDER BY created_at""",
                 (session_id,),
             ).fetchall()
@@ -595,7 +605,8 @@ class ChatRepository:
                 "role": r[1],
                 "content": r[2],
                 "evidence": r[3],
-                "created_at": r[4].isoformat(),
+                "version_context": r[4],
+                "created_at": r[5].isoformat(),
             }
             for r in rows
         ]
@@ -684,6 +695,7 @@ class ChunkRepository:
                 """SELECT c.source_file_id, c.region_type, c.chunk_text, c.bbox,
                           c.image_uri, c.page, f.filename,
                           f.drawing_id, d.dwg_number, p.name AS project_name,
+                          d.version_group_id, d.year, d.drawing_date, d.version_note,
                           1 - (c.embedding <=> %s::vector) AS score
                    FROM chunks c
                         JOIN files f ON f.id = c.source_file_id
@@ -706,7 +718,11 @@ class ChunkRepository:
                 "drawing_id": str(r[7]) if r[7] else None,
                 "dwg_number": r[8],
                 "project_name": r[9],
-                "score": round(float(r[10]), 4),
+                "version_group_id": str(r[10]) if r[10] else None,
+                "year": r[11],
+                "drawing_date": r[12],
+                "version_note": r[13],
+                "score": round(float(r[14]), 4),
             }
             for r in rows
         ]

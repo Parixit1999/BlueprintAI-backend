@@ -52,7 +52,7 @@ def review_service() -> ReviewService:
 def query_service() -> QueryService:
     return QueryService(
         ChunkRepository(pool), get_embedding_provider(), get_text_generator(),
-        RegistryChunkRepository(pool),
+        RegistryChunkRepository(pool), DrawingRepository(pool),
     )
 
 

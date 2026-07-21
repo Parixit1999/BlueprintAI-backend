@@ -696,11 +696,13 @@ class ChunkRepository:
                           c.image_uri, c.page, f.filename,
                           f.drawing_id, d.dwg_number, p.name AS project_name,
                           d.version_group_id, d.year, d.drawing_date, d.version_note,
+                          s.set_number,
                           1 - (c.embedding <=> %s::vector) AS score
                    FROM chunks c
                         JOIN files f ON f.id = c.source_file_id
                         LEFT JOIN drawings d ON f.drawing_id = d.id
                         LEFT JOIN projects p ON d.project_id = p.id
+                        LEFT JOIN drawing_sets s ON d.set_id = s.id
                    WHERE %s::uuid IS NULL OR d.project_id = %s::uuid
                    ORDER BY c.embedding <=> %s::vector
                    LIMIT %s""",
@@ -722,7 +724,8 @@ class ChunkRepository:
                 "year": r[11],
                 "drawing_date": r[12],
                 "version_note": r[13],
-                "score": round(float(r[14]), 4),
+                "set_number": r[14],
+                "score": round(float(r[15]), 4),
             }
             for r in rows
         ]

@@ -80,7 +80,7 @@ class FileRepository:
         with self._pool.connection() as conn:
             row = conn.execute(
                 "SELECT id, filename, file_type, status, extraction, created_at, s3_key, render, "
-                "content_sha256, error FROM files WHERE id = %s",
+                "content_sha256, error, drawing_id FROM files WHERE id = %s",
                 (file_id,),
             ).fetchone()
         if row is None:
@@ -96,6 +96,7 @@ class FileRepository:
             "render": row[7],
             "content_sha256": row[8],
             "error": row[9],
+            "drawing_id": str(row[10]) if row[10] else None,
         }
 
     def list_render_keys(self, file_id: str) -> list[str]:

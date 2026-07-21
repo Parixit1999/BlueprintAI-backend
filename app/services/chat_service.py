@@ -37,13 +37,13 @@ class ChatService:
             raise FileNotFound("Chat session not found")
         self._chats.delete_session(session_id)
 
-    def ask(self, session_id: str, question: str) -> dict:
+    def ask(self, session_id: str, question: str, project_id: str | None = None) -> dict:
         session = self._chats.get_session(session_id, self._user_id)
         if session is None:
             raise FileNotFound("Chat session not found")
 
         user_msg = self._chats.add_message(session_id, "user", question)
-        result = self._query.ask(question)
+        result = self._query.ask(question, project_id=project_id)
         assistant_msg = self._chats.add_message(
             session_id, "assistant", result["answer"], result["evidence"]
         )

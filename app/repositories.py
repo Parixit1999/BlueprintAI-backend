@@ -591,17 +591,27 @@ class ChunkRepository:
                 ),
             )
 
-    def search(self, embedding: list[float], top_k: int) -> list[dict[str, Any]]:
+    def search(
+        self, embedding: list[float], top_k: int, project_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Vector search over ingested regions. Optionally scoped to one
+        project (via the file -> drawing -> project chain); results carry the
+        drawing/project context so evidence can show where a region lives."""
         vector = json.dumps(embedding)
         with self._pool.connection() as conn:
             rows = conn.execute(
                 """SELECT c.source_file_id, c.region_type, c.chunk_text, c.bbox,
                           c.image_uri, c.page, f.filename,
+                          f.drawing_id, d.dwg_number, p.name AS project_name,
                           1 - (c.embedding <=> %s::vector) AS score
-                   FROM chunks c JOIN files f ON f.id = c.source_file_id
+                   FROM chunks c
+                        JOIN files f ON f.id = c.source_file_id
+                        LEFT JOIN drawings d ON f.drawing_id = d.id
+                        LEFT JOIN projects p ON d.project_id = p.id
+                   WHERE %s::uuid IS NULL OR d.project_id = %s::uuid
                    ORDER BY c.embedding <=> %s::vector
                    LIMIT %s""",
-                (vector, vector, top_k),
+                (vector, project_id, project_id, vector, top_k),
             ).fetchall()
         return [
             {
@@ -612,7 +622,10 @@ class ChunkRepository:
                 "image_uri": r[4],
                 "page": r[5],
                 "filename": r[6],
-                "score": round(float(r[7]), 4),
+                "drawing_id": str(r[7]) if r[7] else None,
+                "dwg_number": r[8],
+                "project_name": r[9],
+                "score": round(float(r[10]), 4),
             }
             for r in rows
         ]

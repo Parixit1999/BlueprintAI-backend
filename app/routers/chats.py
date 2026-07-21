@@ -13,6 +13,7 @@ Service = Annotated[ChatService, Depends(chat_service)]
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
+    project_id: str | None = None  # optional: scope retrieval to one project
 
 
 class RenameRequest(BaseModel):
@@ -48,4 +49,4 @@ def delete_session(session_id: str, service: Service):
 
 @router.post("/{session_id}/messages")
 def ask(session_id: str, body: AskRequest, service: Service):
-    return service.ask(session_id, body.question)
+    return service.ask(session_id, body.question, body.project_id)

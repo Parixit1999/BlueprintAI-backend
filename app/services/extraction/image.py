@@ -14,6 +14,7 @@ from PIL import Image, UnidentifiedImageError
 from app.exceptions import ExtractionFailed, InvalidFile
 from app.schemas import Confidence, ProvisionalChunk, RegionType
 from app.services.ai.base import VisionProvider
+from app.services.extraction.enhance import enhance_for_vision
 
 
 @dataclass
@@ -181,7 +182,11 @@ class ImageExtractor:
         )
 
     def extract(self, path: str) -> list[ProvisionalChunk]:
-        data = open(path, "rb").read()
+        raw = open(path, "rb").read()
+        # Enhancement (orientation, contrast, upscale) BEFORE the vision model;
+        # dims come from the enhanced image so bbox percentages match the
+        # (orientation-normalized) preview.
+        data, _applied = enhance_for_vision(raw)
         try:
             with Image.open(io.BytesIO(data)) as img:
                 width, height = img.size

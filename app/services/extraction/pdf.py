@@ -14,6 +14,7 @@ import pymupdf
 
 from app.exceptions import ExtractionFailed, InvalidFile
 from app.schemas import Confidence, ProvisionalChunk, RegionType
+from app.services.extraction.enhance import enhance_for_vision
 from app.services.extraction.image import ImageExtractor
 
 # Text that looks like a dimension callout: "120", "12.5 mm", "R6.5", "Ø13 ±0.1"
@@ -102,6 +103,7 @@ class PdfExtractor:
         chunks: list[ProvisionalChunk] = []
         for page_index, page in enumerate(doc):
             png = page.get_pixmap(dpi=self.SCAN_DPI).tobytes("png")
+            png, _applied = enhance_for_vision(png)
             regions = self._image.analyze(png)
             # Map vision percentages into PDF-point extents, matching the viewer's
             # render_pdf_page extents [0, 0, page.width, page.height].

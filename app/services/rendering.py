@@ -16,7 +16,7 @@ import pymupdf
 from ezdxf.addons.drawing import Frontend, RenderContext
 from ezdxf.addons.drawing.config import BackgroundPolicy, Configuration
 from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
-from PIL import Image
+from PIL import Image, ImageOps
 
 from app.exceptions import RenderFailed
 
@@ -60,6 +60,9 @@ def render_pdf_page(path: str, page: int) -> tuple[bytes, list[float]]:
 
 def render_image(path: str) -> tuple[bytes, list[float]]:
     with Image.open(path) as img:
+        # same EXIF-orientation normalization as extraction, so vision bboxes
+        # line up with the preview
+        img = ImageOps.exif_transpose(img)
         width, height = img.size
         buf = io.BytesIO()
         img.convert("RGB").save(buf, format="PNG")

@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     # budget. Local vision on a detailed scanned drawing can be slow.
     ollama_read_timeout: float = 300.0
 
+    # DWG support: path to the free ODA File Converter binary; when unset,
+    # DWG uploads get guidance to export DXF/PDF instead.
+    oda_converter_path: str | None = None
+
     max_upload_bytes: int = 25 * 1024 * 1024  # 25 MB
 
     # Two documents whose embeddings are at least this cosine-similar are

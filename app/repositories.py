@@ -475,10 +475,10 @@ class RegistryChunkRepository:
         with self._pool.connection() as conn:
             rows = conn.execute(
                 """SELECT entity_type, entity_id, project_id, label, project_name, chunk_text,
-                          1 - (embedding <=> %s::vector) AS score
+                          (1 - (embedding <=> %s::vector)) * feedback_weight AS score
                    FROM registry_chunks
                    WHERE %s::uuid IS NULL OR project_id = %s::uuid
-                   ORDER BY embedding <=> %s::vector
+                   ORDER BY (1 - (embedding <=> %s::vector)) * feedback_weight DESC
                    LIMIT %s""",
                 (vector, project_id, project_id, vector, top_k),
             ).fetchall()
@@ -507,6 +507,19 @@ class RegistryChunkRepository:
     def count(self) -> int:
         with self._pool.connection() as conn:
             return conn.execute("SELECT count(*) FROM registry_chunks").fetchone()[0]
+
+    def adjust_weights(self, entities: list[tuple[str, str]], delta: float) -> None:
+        """RLHF weight shift for registry cards, by (entity_type, entity_id)."""
+        if not entities:
+            return
+        with self._pool.connection() as conn:
+            for etype, eid in entities:
+                conn.execute(
+                    "UPDATE registry_chunks SET feedback_weight = "
+                    "GREATEST(0.3, LEAST(2.0, feedback_weight + %s)) "
+                    "WHERE entity_type = %s AND entity_id = %s",
+                    (delta, etype, eid),
+                )
 
 
 class ChatRepository:
@@ -592,11 +605,50 @@ class ChatRepository:
             "created_at": row[1].isoformat(),
         }
 
+    def get_message(self, session_id: str, message_id: str) -> dict[str, Any] | None:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT id, role, content, evidence FROM chat_messages "
+                "WHERE id = %s AND session_id = %s",
+                (message_id, session_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return {"message_id": str(row[0]), "role": row[1], "content": row[2], "evidence": row[3]}
+
+    def set_rating(self, message_id: str, rating: int, comment: str | None) -> int:
+        """Upsert a rating; returns the PREVIOUS rating (0 if none) so the
+        caller can apply a weight delta rather than double-counting."""
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT rating FROM answer_feedback WHERE message_id = %s", (message_id,)
+            ).fetchone()
+            previous = row[0] if row else 0
+            conn.execute(
+                """INSERT INTO answer_feedback (message_id, rating, comment)
+                   VALUES (%s, %s, %s)
+                   ON CONFLICT (message_id) DO UPDATE SET
+                       rating = EXCLUDED.rating, comment = EXCLUDED.comment, updated_at = now()""",
+                (message_id, rating, comment),
+            )
+        return previous
+
+    def clear_rating(self, message_id: str) -> int:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT rating FROM answer_feedback WHERE message_id = %s", (message_id,)
+            ).fetchone()
+            previous = row[0] if row else 0
+            conn.execute("DELETE FROM answer_feedback WHERE message_id = %s", (message_id,))
+        return previous
+
     def list_messages(self, session_id: str) -> list[dict[str, Any]]:
         with self._pool.connection() as conn:
             rows = conn.execute(
-                """SELECT id, role, content, evidence, version_context, created_at
-                   FROM chat_messages WHERE session_id = %s ORDER BY created_at""",
+                """SELECT m.id, m.role, m.content, m.evidence, m.version_context, m.created_at,
+                          fb.rating
+                   FROM chat_messages m LEFT JOIN answer_feedback fb ON fb.message_id = m.id
+                   WHERE m.session_id = %s ORDER BY m.created_at""",
                 (session_id,),
             ).fetchall()
         return [
@@ -607,6 +659,7 @@ class ChatRepository:
                 "evidence": r[3],
                 "version_context": r[4],
                 "created_at": r[5].isoformat(),
+                "feedback": r[6],
             }
             for r in rows
         ]
@@ -683,6 +736,18 @@ class ChunkRepository:
                 ),
             )
 
+    def adjust_weights(self, chunk_ids: list[str], delta: float) -> None:
+        """RLHF: shift the retrieval weight of rated evidence, clamped so no
+        region can be boosted or buried without limit."""
+        if not chunk_ids:
+            return
+        with self._pool.connection() as conn:
+            conn.execute(
+                "UPDATE chunks SET feedback_weight = GREATEST(0.3, LEAST(2.0, feedback_weight + %s)) "
+                "WHERE id = ANY(%s::uuid[])",
+                (delta, chunk_ids),
+            )
+
     def search(
         self, embedding: list[float], top_k: int, project_id: str | None = None
     ) -> list[dict[str, Any]]:
@@ -696,15 +761,15 @@ class ChunkRepository:
                           c.image_uri, c.page, f.filename,
                           f.drawing_id, d.dwg_number, p.name AS project_name,
                           d.version_group_id, d.year, d.drawing_date, d.version_note,
-                          s.set_number,
-                          1 - (c.embedding <=> %s::vector) AS score
+                          s.set_number, c.id AS chunk_id, c.feedback_weight,
+                          (1 - (c.embedding <=> %s::vector)) * c.feedback_weight AS score
                    FROM chunks c
                         JOIN files f ON f.id = c.source_file_id
                         LEFT JOIN drawings d ON f.drawing_id = d.id
                         LEFT JOIN projects p ON d.project_id = p.id
                         LEFT JOIN drawing_sets s ON d.set_id = s.id
                    WHERE %s::uuid IS NULL OR d.project_id = %s::uuid
-                   ORDER BY c.embedding <=> %s::vector
+                   ORDER BY (1 - (c.embedding <=> %s::vector)) * c.feedback_weight DESC
                    LIMIT %s""",
                 (vector, project_id, project_id, vector, top_k),
             ).fetchall()
@@ -725,7 +790,9 @@ class ChunkRepository:
                 "drawing_date": r[12],
                 "version_note": r[13],
                 "set_number": r[14],
-                "score": round(float(r[15]), 4),
+                "chunk_id": str(r[15]),
+                "feedback_weight": round(float(r[16]), 3),
+                "score": round(float(r[17]), 4),
             }
             for r in rows
         ]

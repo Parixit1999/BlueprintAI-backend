@@ -20,6 +20,11 @@ class RenameRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
 
 
+class FeedbackRequest(BaseModel):
+    rating: int = Field(ge=-1, le=1)  # 1 helpful, -1 not helpful, 0 clear
+    comment: str | None = Field(default=None, max_length=1000)
+
+
 # Sync def handlers: all do blocking work (DB, and for `ask` the embedding + LLM
 # generation), so FastAPI runs them in its worker threadpool, off the event loop.
 @router.post("")
@@ -50,3 +55,9 @@ def delete_session(session_id: str, service: Service):
 @router.post("/{session_id}/messages")
 def ask(session_id: str, body: AskRequest, service: Service):
     return service.ask(session_id, body.question, body.project_id)
+
+
+@router.post("/{session_id}/messages/{message_id}/feedback")
+def rate_message(session_id: str, message_id: str, body: FeedbackRequest, service: Service):
+    """RLHF: rate an answer; the rating reweights the evidence it used."""
+    return service.rate_message(session_id, message_id, body.rating, body.comment)

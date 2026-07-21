@@ -1,7 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.dependencies import query_service
 from app.services.query_service import QueryService
@@ -12,8 +12,8 @@ Service = Annotated[QueryService, Depends(query_service)]
 
 
 class QueryRequest(BaseModel):
-    question: str
-    top_k: int = 5
+    question: str = Field(min_length=1, max_length=2000)
+    top_k: int = Field(default=5, ge=1, le=20)
     project_id: str | None = None  # optional: scope retrieval to one project
 
 

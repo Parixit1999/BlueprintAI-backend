@@ -26,7 +26,17 @@ class FileService:
             return None
         return self._embedder.embed(" ".join(texts))
 
+    @staticmethod
+    def _sanitize_filename(filename: str) -> str:
+        """Uploads control this string: strip any path components and control
+        characters so it can never influence storage keys, temp paths, or UI
+        rendering; cap the length for sane display and key sizes."""
+        clean = Path(filename or "").name
+        clean = "".join(ch for ch in clean if ch.isprintable() and ch not in '\\/:*?"<>|')
+        return clean[:200].strip() or "unnamed"
+
     def ingest_upload(self, filename: str, data: bytes, folder_id: str | None = None) -> dict:
+        filename = self._sanitize_filename(filename)
         suffix = Path(filename).suffix.lower()
         extractor = extraction.get_extractor(suffix)
         if extractor is None:

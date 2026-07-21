@@ -6,7 +6,7 @@ should never cite regions from an unrelated drawing. We cast a wide net, pick
 the drawing that contains the best-matching region, and keep only that
 drawing's regions as both the model's context and the shown evidence.
 """
-from app.repositories import ChunkRepository
+from app.repositories import ChunkRepository, RegistryChunkRepository
 from app.services.ai.base import EmbeddingProvider, TextGenerator
 
 SYSTEM_PROMPT = (
@@ -41,19 +41,58 @@ MAX_EVIDENCE = 6
 NO_MATCH = "I couldn't find anything about that in the ingested drawings."
 
 
+REGISTRY_POOL = 10
+
+
 class QueryService:
-    def __init__(self, chunks: ChunkRepository, embedder: EmbeddingProvider, generator: TextGenerator):
+    def __init__(
+        self,
+        chunks: ChunkRepository,
+        embedder: EmbeddingProvider,
+        generator: TextGenerator,
+        registry: RegistryChunkRepository | None = None,
+    ):
         self._chunks = chunks
         self._embedder = embedder
         self._generator = generator
+        self._registry = registry
+
+    def _registry_answer(self, question: str, meta_hits: list[dict]) -> dict:
+        """Answer from registry metadata cards (projects, drawings, sets,
+        versions) when they match the question better than any file content."""
+        top = meta_hits[0]["score"]
+        floor = top * RELATIVE_FLOOR
+        hits = [h for h in meta_hits if h["score"] >= floor][:MAX_EVIDENCE]
+        context = "\n\n".join(
+            f"[{i + 1}] ({h['entity_type']} record) {h['chunk_text']}"
+            for i, h in enumerate(hits)
+        )
+        answer = self._generator.generate(
+            SYSTEM_PROMPT,
+            "Context from the drawing registry (projects, drawings, sets, versions):\n"
+            f"{context}\n\nQuestion: {question}",
+        )
+        return {"answer": answer, "evidence": hits}
 
     def ask(self, question: str, top_k: int = 5, project_id: str | None = None) -> dict:
-        """Answer a question over the ingested drawings, optionally scoped to
-        one project (Phase 2 integration with the project registry)."""
-        candidates = self._chunks.search(
-            self._embedder.embed(question), CANDIDATE_POOL, project_id
+        """Answer a question over the ingested drawings AND the registry
+        metadata (projects, drawing metadata, sets, versions, file metadata),
+        optionally scoped to one project."""
+        q_embedding = self._embedder.embed(question)
+        candidates = self._chunks.search(q_embedding, CANDIDATE_POOL, project_id)
+        meta_hits = (
+            self._registry.search(q_embedding, REGISTRY_POOL, project_id)
+            if self._registry is not None
+            else []
         )
+
         top_score = candidates[0]["score"] if candidates else 0.0
+        top_meta = meta_hits[0]["score"] if meta_hits else 0.0
+
+        # Registry metadata wins when it matches the question better than any
+        # extracted drawing content ("what contract covers 11767-W-59?").
+        if top_meta >= MIN_RELEVANCE and top_meta >= top_score:
+            return self._registry_answer(question, meta_hits)
         if top_score < MIN_RELEVANCE:
             return {"answer": NO_MATCH, "evidence": []}
 

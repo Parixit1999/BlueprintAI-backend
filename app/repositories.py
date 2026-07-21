@@ -428,6 +428,87 @@ class DrawingRepository:
             )
 
 
+class RegistryChunkRepository:
+    """Searchable metadata cards for registry entities (projects, drawings,
+    sets). One card per entity, upserted whenever the entity changes."""
+
+    def __init__(self, pool: ConnectionPool):
+        self._pool = pool
+
+    def upsert(
+        self,
+        entity_type: str,
+        entity_id: str,
+        project_id: str | None,
+        label: str,
+        project_name: str | None,
+        chunk_text: str,
+        embedding: list[float],
+    ) -> None:
+        with self._pool.connection() as conn:
+            conn.execute(
+                """INSERT INTO registry_chunks
+                       (entity_type, entity_id, project_id, label, project_name, chunk_text, embedding)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (entity_type, entity_id) DO UPDATE SET
+                       project_id = EXCLUDED.project_id,
+                       label = EXCLUDED.label,
+                       project_name = EXCLUDED.project_name,
+                       chunk_text = EXCLUDED.chunk_text,
+                       embedding = EXCLUDED.embedding,
+                       updated_at = now()""",
+                (entity_type, entity_id, project_id, label, project_name,
+                 chunk_text, json.dumps(embedding)),
+            )
+
+    def remove(self, entity_type: str, entity_id: str) -> None:
+        with self._pool.connection() as conn:
+            conn.execute(
+                "DELETE FROM registry_chunks WHERE entity_type = %s AND entity_id = %s",
+                (entity_type, entity_id),
+            )
+
+    def search(
+        self, embedding: list[float], top_k: int, project_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        vector = json.dumps(embedding)
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """SELECT entity_type, entity_id, project_id, label, project_name, chunk_text,
+                          1 - (embedding <=> %s::vector) AS score
+                   FROM registry_chunks
+                   WHERE %s::uuid IS NULL OR project_id = %s::uuid
+                   ORDER BY embedding <=> %s::vector
+                   LIMIT %s""",
+                (vector, project_id, project_id, vector, top_k),
+            ).fetchall()
+        return [
+            {
+                "region_type": "registry",
+                "entity_type": r[0],
+                "entity_id": str(r[1]),
+                "project_id": str(r[2]) if r[2] else None,
+                "label": r[3],
+                "project_name": r[4],
+                "chunk_text": r[5],
+                "score": round(float(r[6]), 4),
+                # keep the evidence shape compatible with file-content hits
+                "source_file_id": None,
+                "bbox": None,
+                "image_uri": None,
+                "page": None,
+                "filename": None,
+                "dwg_number": r[3] if r[0] == "drawing" else None,
+                "drawing_id": str(r[1]) if r[0] == "drawing" else None,
+            }
+            for r in rows
+        ]
+
+    def count(self) -> int:
+        with self._pool.connection() as conn:
+            return conn.execute("SELECT count(*) FROM registry_chunks").fetchone()[0]
+
+
 class ChatRepository:
     def __init__(self, pool: ConnectionPool):
         self._pool = pool

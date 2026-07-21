@@ -25,7 +25,7 @@ carries verifiability through extraction → storage → retrieval → display.
 - **FastAPI** (Python 3.12), layered: `routers` (HTTP only) → `services`
   (orchestration, DI'd) → `repositories.py` (all SQL) → `db.py` (psycopg pool).
 - **AI providers** behind protocols in `services/ai/` with a config factory:
-  `AI_PROVIDER=ollama` (local: mxbai-embed-large, llama3.1:8b, qwen2.5vl:7b) or
+  `AI_PROVIDER=ollama` (local: snowflake-arctic-embed, llama3.1:8b, llama3.2-vision:11b) or
   `bedrock` (Titan + Claude). One env var flips everything.
 - **Storage** behind `ObjectStorage`: MinIO locally, S3 in AWS (same boto3 code,
   switched by `S3_ENDPOINT_URL`).

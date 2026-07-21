@@ -49,3 +49,16 @@ afterthoughts.
   system prompt constrains answers to provided context and every answer is
   citation-checked by a human-visible evidence trail, which bounds the blast
   radius; a dedicated injection filter is future work for multi-tenant use.
+
+## AI model provenance (American-based requirement)
+
+All models in both deployment modes are from US companies:
+
+| Role | Local (Ollama) | AWS (Bedrock) |
+|---|---|---|
+| Vision extraction | Llama 3.2 Vision - Meta (US) | Anthropic Claude (US) |
+| Answer generation | Llama 3.1 - Meta (US) | Anthropic Claude (US) |
+| Embeddings (1024-dim) | Snowflake Arctic Embed - Snowflake (US) | Amazon Titan Text Embeddings v2 (US) |
+
+Both embedding models are 1024-dimensional, so the pgvector schema is
+identical across modes and no migration is needed when switching providers.

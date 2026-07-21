@@ -31,7 +31,12 @@ class VisionRegion:
 
 PROMPT = """You are extracting content from an engineering drawing image.
 
-Return ONLY a JSON array. Each element describes one text region:
+Find EVERY piece of visible text in the image - title block fields, drawing
+numbers, dimensions, notes, labels. Each one is its own region; do not merge
+or skip any.
+
+Return ONLY a JSON object of the form {"regions": [...]} where each element of
+"regions" describes one text region:
 {
   "text": "the exact text, or null if illegible - NEVER guess",
   "type": "note" | "dimension" | "title_block" | "bom",
@@ -42,7 +47,7 @@ Return ONLY a JSON array. Each element describes one text region:
 bbox_pct values are percentages (0-100) of image width/height measured from
 the TOP-LEFT corner. Use confidence "low" for anything small, blurry, or
 partially obscured. If a value is illegible, set text to null and confidence
-to "low". Do not include any prose outside the JSON array."""
+to "low". No prose outside the JSON object."""
 
 _REGION_MAP = {
     "note": RegionType.note,
@@ -53,7 +58,16 @@ _REGION_MAP = {
 
 
 def _parse_response(raw: str) -> list[dict]:
-    # Models often wrap JSON in code fences or add prose - extract the array.
+    # Preferred: the {"regions": [...]} object contract. Fall back to a bare
+    # array for models/providers that return one.
+    try:
+        obj = json.loads(raw)
+        if isinstance(obj, dict) and isinstance(obj.get("regions"), list):
+            return obj["regions"]
+        if isinstance(obj, list):
+            return obj
+    except json.JSONDecodeError:
+        pass
     match = re.search(r"\[.*\]", raw, re.DOTALL)
     if match is None:
         raise ExtractionFailed(

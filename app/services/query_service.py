@@ -28,9 +28,10 @@ SYSTEM_PROMPT = (
 # Cast a wide net, then narrow to one drawing.
 CANDIDATE_POOL = 30
 # Below this cosine similarity the best match is off-topic; nothing in the
-# knowledge base answers the question. Calibrated on real data: genuine
-# questions score >= ~0.52, off-topic ones <= ~0.45.
-MIN_RELEVANCE = 0.50
+# knowledge base answers the question. Calibrated for snowflake-arctic-embed
+# (its similarity distribution runs hotter than the previous embedder):
+# genuine questions score >= ~0.82, off-topic ones <= ~0.61.
+MIN_RELEVANCE = 0.70
 # Within the chosen drawing, keep only regions scoring at least this fraction
 # of the best region's score, so evidence is what actually supports the answer
 # rather than weak padding.
@@ -54,10 +55,10 @@ REGISTRY_POOL = 10
 # Registry cards are dense entity summaries full of registry vocabulary
 # ("drawing", "project", "set"), so they score generically high on any
 # drawing-flavored phrasing. A registry answer must therefore beat the best
-# file content by a clear margin. Calibrated on real data: registry-appropriate
-# questions ("what contract covers X?") show margins >= +0.18, content
-# questions phrased with "drawings" show <= +0.06.
-REGISTRY_MARGIN = 0.12
+# file content by a clear margin. Calibrated for snowflake-arctic-embed:
+# registry-appropriate questions ("what contract covers X?") show margins
+# >= +0.07, content questions (even "drawings"-phrased ones) <= -0.05.
+REGISTRY_MARGIN = 0.03
 
 
 class QueryService:

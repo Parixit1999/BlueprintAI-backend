@@ -1,11 +1,12 @@
 """Local Ollama provider - used while AWS is unavailable and for offline dev."""
 import base64
+import concurrent.futures
 import json
 
 import httpx
 
 from app.config import settings
-from app.exceptions import VisionUnavailable
+from app.exceptions import ExtractionFailed, VisionUnavailable
 
 
 def _stream_chat(payload: dict) -> str:
@@ -64,18 +65,31 @@ class OllamaGenerator:
 
 class OllamaVision:
     def analyze_image(self, image_bytes: bytes, prompt: str) -> str:
-        try:
-            return _stream_chat(
+        payload = {
+            "model": settings.ollama_vision_model,
+            "messages": [
                 {
-                    "model": settings.ollama_vision_model,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": prompt,
-                            "images": [base64.b64encode(image_bytes).decode()],
-                        }
-                    ],
+                    "role": "user",
+                    "content": prompt,
+                    "images": [base64.b64encode(image_bytes).decode()],
                 }
+            ],
+        }
+        # Absolute deadline backstop on top of the socket timeouts: a wedged
+        # Ollama has been observed holding a connection open for hours without
+        # tripping httpx's read timeout, hanging the extraction thread forever.
+        # Running the call in a helper thread guarantees the caller gets control
+        # back and the failure surfaces as a normal extraction error.
+        deadline = settings.ollama_read_timeout * 2
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(_stream_chat, payload)
+        try:
+            return future.result(timeout=deadline)
+        except concurrent.futures.TimeoutError:
+            raise ExtractionFailed(
+                f"The vision model did not respond within {int(deadline)} seconds - the local "
+                "AI service appears stuck. Retry the extraction; if it keeps happening, "
+                "restart Ollama (brew services restart ollama)."
             )
         except httpx.ConnectError:
             raise VisionUnavailable(
@@ -87,3 +101,5 @@ class OllamaVision:
                 "this drawing. Try a smaller or lower-resolution image, or switch extraction to "
                 "the faster cloud vision model (AWS Bedrock)."
             )
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)

@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS files (
     filename      text NOT NULL,
     file_type     text NOT NULL,            -- dxf | pdf | image
     s3_key        text NOT NULL,            -- original file location
-    status        text NOT NULL DEFAULT 'uploaded',  -- uploaded | extracted | reviewed | ingested
+    status        text NOT NULL DEFAULT 'uploaded',  -- uploaded | extracted | reviewed | ingested | failed
+    error         text,                     -- extraction failure message when status = 'failed'
     content_sha256 text,                    -- hash of the original bytes (exact-match signal)
     embedding     vector(1024),             -- document-level embedding for semantic duplicate/similarity detection
     extraction    jsonb,                    -- provisional chunks awaiting HITL review

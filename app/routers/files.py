@@ -45,6 +45,13 @@ def get_render(file_id: str, renderer: Renderer, page: Annotated[int, Query(ge=1
     return renderer.get_render(file_id, page)
 
 
+@router.post("/{file_id}/retry")
+def retry_extraction(file_id: str, service: Service):
+    """Re-run extraction on a failed upload from the stored original. Sync def:
+    extraction is blocking, so it runs in the worker threadpool."""
+    return service.retry_extraction(file_id)
+
+
 @router.delete("/{file_id}", status_code=204)
 def delete_file(file_id: str, service: Service):
     """Delete a document, its chunks, and its stored files. Domain errors map via the app handler."""

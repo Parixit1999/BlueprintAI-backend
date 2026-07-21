@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 
 from app.config import settings
-from app.exceptions import FileNotFound, FileTooLarge, UnsupportedFileType
+from app.exceptions import BlueprintError, FileNotFound, FileTooLarge, UnsupportedFileType
 from app.repositories import FileRepository
 from app.services import extraction
 from app.services.ai.base import EmbeddingProvider
@@ -47,20 +47,49 @@ class FileService:
         file_id = self._files.create(filename, suffix.lstrip("."), content_sha256)
         s3_key = f"originals/{file_id}/{filename}"
         self._storage.upload_bytes(data, s3_key)
+        return self._extract_and_store(file_id, filename, suffix, s3_key, data)
 
+    def _extract_and_store(
+        self, file_id: str, filename: str, suffix: str, s3_key: str, data: bytes
+    ) -> dict:
+        """Run extraction and persist the result. On failure the row is kept
+        with status 'failed' and the error message, so the user sees what went
+        wrong in the document list and can retry without re-uploading."""
+        extractor = extraction.get_extractor(suffix)
         with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
             tmp.write(data)
             tmp.flush()
             try:
                 chunks = [c.model_dump(mode="json") for c in extractor.extract(tmp.name)]
-            except Exception:
-                # keep no orphaned records for failed extractions
-                self._files.delete(file_id)
+            except BlueprintError as exc:
+                self._files.mark_failed(file_id, s3_key, str(exc))
+                raise
+            except Exception as exc:
+                self._files.mark_failed(
+                    file_id, s3_key, f"Unexpected extraction error: {exc}"
+                )
                 raise
 
         embedding = self._document_embedding(chunks)
         self._files.mark_extracted(file_id, s3_key, chunks, embedding)
         return {"file_id": file_id, "filename": filename, "chunks": chunks}
+
+    def retry_extraction(self, file_id: str) -> dict:
+        """Re-run extraction on the stored original of a failed (or stuck
+        'uploaded') document."""
+        record = self._files.get(file_id)
+        if record is None:
+            raise FileNotFound("Document not found")
+        if record["status"] not in ("failed", "uploaded"):
+            raise UnsupportedFileType(
+                "This document was already extracted - retry only applies to failed uploads."
+            )
+        filename = record["filename"]
+        s3_key = record["s3_key"]
+        if not s3_key or s3_key == "pending":
+            s3_key = f"originals/{file_id}/{filename}"
+        data = self._storage.download_bytes(s3_key)
+        return self._extract_and_store(file_id, filename, Path(filename).suffix.lower(), s3_key, data)
 
     def list_files(self) -> list[dict]:
         return self._files.list_all(settings.duplicate_similarity_threshold)

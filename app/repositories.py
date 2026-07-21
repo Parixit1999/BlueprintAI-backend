@@ -24,8 +24,17 @@ class FileRepository:
         with self._pool.connection() as conn:
             conn.execute(
                 "UPDATE files SET s3_key = %s, status = 'extracted', extraction = %s, "
-                "embedding = %s WHERE id = %s",
+                "embedding = %s, error = NULL WHERE id = %s",
                 (s3_key, json.dumps(chunks), json.dumps(embedding) if embedding else None, file_id),
+            )
+
+    def mark_failed(self, file_id: str, s3_key: str, error: str) -> None:
+        """Keep the row on extraction failure (instead of deleting) so the UI
+        can show what went wrong and offer a retry without re-uploading."""
+        with self._pool.connection() as conn:
+            conn.execute(
+                "UPDATE files SET s3_key = %s, status = 'failed', error = %s WHERE id = %s",
+                (s3_key, error, file_id),
             )
 
     def mark_ingested(self, file_id: str) -> None:
@@ -39,8 +48,8 @@ class FileRepository:
     def get(self, file_id: str) -> dict[str, Any] | None:
         with self._pool.connection() as conn:
             row = conn.execute(
-                "SELECT id, filename, file_type, status, extraction, created_at, s3_key, render, content_sha256 "
-                "FROM files WHERE id = %s",
+                "SELECT id, filename, file_type, status, extraction, created_at, s3_key, render, "
+                "content_sha256, error FROM files WHERE id = %s",
                 (file_id,),
             ).fetchone()
         if row is None:
@@ -55,6 +64,7 @@ class FileRepository:
             "s3_key": row[6],
             "render": row[7],
             "content_sha256": row[8],
+            "error": row[9],
         }
 
     def list_render_keys(self, file_id: str) -> list[str]:
@@ -87,7 +97,7 @@ class FileRepository:
         with self._pool.connection() as conn:
             rows = conn.execute(
                 """SELECT f.id, f.filename, f.file_type, f.status, f.created_at,
-                          count(c.id),
+                          f.error, count(c.id),
                           (
                             SELECT json_agg(json_build_object(
                                      'file_id', o.id, 'filename', o.filename,
@@ -108,9 +118,10 @@ class FileRepository:
                 "file_type": r[2],
                 "status": r[3],
                 "created_at": r[4].isoformat(),
-                "chunk_count": r[5],
-                "similar_documents": r[6] or [],
-                "is_duplicate": bool(r[6]),
+                "error": r[5],
+                "chunk_count": r[6],
+                "similar_documents": r[7] or [],
+                "is_duplicate": bool(r[7]),
             }
             for r in rows
         ]

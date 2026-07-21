@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     s3_bucket: str = "blueprintai-files"
     # Set to http://localhost:9000 for local MinIO; leave unset for real S3
     s3_endpoint_url: str | None = None
+    # Endpoint browsers can reach, used only for presigned URLs. Needed when
+    # the backend runs in docker (it reaches MinIO as http://minio:9000, a
+    # hostname the user's browser cannot resolve). Defaults to s3_endpoint_url.
+    s3_public_endpoint_url: str | None = None
     s3_access_key: str | None = None
     s3_secret_key: str | None = None
 

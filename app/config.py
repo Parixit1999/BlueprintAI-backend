@@ -18,9 +18,9 @@ class Settings(BaseSettings):
     # "ollama" (local) or "bedrock" (AWS) — controls embeddings + generation
     ai_provider: str = "ollama"
     ollama_base_url: str = "http://localhost:11434"
-    ollama_embed_model: str = "mxbai-embed-large"  # 1024-dim, same as Titan v2
+    ollama_embed_model: str = "snowflake-arctic-embed:335m"  # 1024-dim, same as Titan v2
     ollama_text_model: str = "llama3.1:8b"
-    ollama_vision_model: str = "qwen2.5vl:7b"
+    ollama_vision_model: str = "llama3.2-vision:11b"
     # Vision/generation responses are streamed, so this is the max gap between
     # chunks (covers model load + time-to-first-token), not the whole-response
     # budget. Local vision on a detailed scanned drawing can be slow.

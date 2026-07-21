@@ -23,7 +23,7 @@ the chunk boundary IS the evidence boundary.
 - Password-protected or corrupt → `InvalidFile`.
 
 ## Image — `image.py`
-- Vision model (`VisionProvider`: Ollama qwen2.5vl local, Bedrock Claude on AWS).
+- Vision model (`VisionProvider`: Ollama llama3.2-vision local, Bedrock Claude on AWS).
   `analyze(bytes) -> list[VisionRegion]` is coordinate-space-agnostic (percentage
   bboxes) so both image uploads and scanned-PDF pages reuse it; `region_to_chunk`
   maps a region into the caller's y-up extents. Downscaled to a known size so

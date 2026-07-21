@@ -9,7 +9,7 @@ from app.config import settings
 from app.exceptions import ExtractionFailed, VisionUnavailable
 
 
-def _stream_chat(payload: dict) -> str:
+def _stream_chat(payload: dict, json_format: bool = False) -> str:
     """POST to Ollama /api/chat with stream=True and concatenate the message
     content. Streaming matters for slow local models: with a single non-streamed
     response the read timeout must cover the ENTIRE generation, so a long answer
@@ -18,6 +18,10 @@ def _stream_chat(payload: dict) -> str:
     but progressing generation completes. The timeout below is that per-chunk gap
     (also covers model load + time-to-first-token)."""
     payload = {**payload, "stream": True}
+    if json_format:
+        # Ollama-enforced valid JSON output - llama3.2-vision ignores prompt-level
+        # format instructions and answers in prose without this.
+        payload["format"] = "json"
     timeout = httpx.Timeout(settings.ollama_read_timeout, connect=30.0)
     with httpx.stream(
         "POST", f"{settings.ollama_base_url}/api/chat", json=payload, timeout=timeout
@@ -82,7 +86,7 @@ class OllamaVision:
         # back and the failure surfaces as a normal extraction error.
         deadline = settings.ollama_read_timeout * 2
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(_stream_chat, payload)
+        future = executor.submit(_stream_chat, payload, True)
         try:
             return future.result(timeout=deadline)
         except concurrent.futures.TimeoutError:

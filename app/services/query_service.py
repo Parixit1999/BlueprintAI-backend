@@ -187,10 +187,27 @@ class QueryService:
         return {"answer": answer, "evidence": hits, "version_context": None,
                 "multi_drawing": len({h["entity_id"] for h in hits}) > 1}
 
-    def ask(self, question: str, top_k: int = 5, project_id: str | None = None) -> dict:
+    @staticmethod
+    def _conversation_block(history: list[dict]) -> str:
+        """Recent turns, truncated, so the model can resolve follow-ups
+        ("what about its material?") within the session."""
+        lines = []
+        for m in history[-6:]:
+            speaker = "User" if m["role"] == "user" else "Assistant"
+            lines.append(f"{speaker}: {m['content'][:300]}")
+        return "\n".join(lines)
+
+    def ask(
+        self,
+        question: str,
+        top_k: int = 5,
+        project_id: str | None = None,
+        history: list[dict] | None = None,
+    ) -> dict:
         """Answer a question over the ingested drawings AND the registry
         metadata (projects, drawing metadata, sets, versions, file metadata),
-        optionally scoped to one project."""
+        optionally scoped to one project. `history` (recent session turns)
+        lets follow-up questions keep their conversation context."""
         q_embedding = self._embedder.embed(question)
         candidates = self._chunks.search(q_embedding, CANDIDATE_POOL, project_id)
         meta_hits = (
@@ -202,10 +219,31 @@ class QueryService:
         top_score = candidates[0]["score"] if candidates else 0.0
         top_meta = meta_hits[0]["score"] if meta_hits else 0.0
 
+        # Follow-up carry-over: a terse follow-up ("and its part number?") may
+        # not retrieve on its own. Re-embed it together with the previous user
+        # question and retry before giving up.
+        if history and max(top_score, top_meta) < MIN_RELEVANCE:
+            prev_user = next(
+                (m["content"] for m in reversed(history) if m["role"] == "user"), None
+            )
+            if prev_user:
+                carry_embedding = self._embedder.embed(f"{prev_user}\n{question}")
+                candidates = self._chunks.search(carry_embedding, CANDIDATE_POOL, project_id)
+                if self._registry is not None:
+                    meta_hits = self._registry.search(carry_embedding, REGISTRY_POOL, project_id)
+                top_score = candidates[0]["score"] if candidates else 0.0
+                top_meta = meta_hits[0]["score"] if meta_hits else 0.0
+
         # Registry metadata wins only when it clearly dominates the extracted
         # content ("what contract covers 11767-W-59?") - see REGISTRY_MARGIN.
+        convo = self._conversation_block(history) if history else ""
+        convo_prefix = (
+            f"Conversation so far (the question may refer back to it):\n{convo}\n\n"
+            if convo
+            else ""
+        )
         if top_meta >= MIN_RELEVANCE and top_meta >= top_score + REGISTRY_MARGIN:
-            return self._registry_answer(question, meta_hits)
+            return self._registry_answer(convo_prefix + question, meta_hits)
         if top_score < MIN_RELEVANCE:
             return {"answer": NO_MATCH, "evidence": [], "version_context": None, "multi_drawing": False}
 
@@ -227,7 +265,7 @@ class QueryService:
             reverse=True,
         )
         if len(qualifying) >= 2:
-            return self._multi_drawing_answer(question, qualifying)
+            return self._multi_drawing_answer(convo_prefix + question, qualifying)
 
         # Single-drawing mode: the drawing that owns the best-matching region is
         # the one the question is about; keep only its regions.
@@ -264,7 +302,8 @@ class QueryService:
         )
         answer = self._generator.generate(
             SYSTEM_PROMPT,
-            f"Context from {source_line}:{version_line}\n{context}\n\nQuestion: {question}",
+            f"{convo_prefix}Context from {source_line}:{version_line}\n{context}\n\n"
+            f"Question: {question}",
         )
         return {"answer": answer, "evidence": hits, "version_context": version_context,
                 "multi_drawing": False}

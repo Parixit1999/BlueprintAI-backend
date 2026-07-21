@@ -628,6 +628,40 @@ class RegistryChunkRepository:
             for r in rows
         ]
 
+    def get_by_entity(self, entity_ids: list[str]) -> list[dict[str, Any]]:
+        """Exact card lookup for identifier-anchored retrieval: when a question
+        names a DWG number outright, its card is included deterministically
+        rather than hoping embedding similarity clears the floor."""
+        if not entity_ids:
+            return []
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """SELECT entity_type, entity_id, project_id, label, project_name, chunk_text
+                   FROM registry_chunks WHERE entity_id = ANY(%s::uuid[])""",
+                (entity_ids,),
+            ).fetchall()
+        return [
+            {
+                "region_type": "registry",
+                "entity_type": r[0],
+                "entity_id": str(r[1]),
+                "project_id": str(r[2]) if r[2] else None,
+                "label": r[3],
+                "project_name": r[4],
+                "chunk_text": r[5],
+                # exact identifier match - outranks any similarity score
+                "score": 0.99,
+                "source_file_id": None,
+                "bbox": None,
+                "image_uri": None,
+                "page": None,
+                "filename": None,
+                "dwg_number": r[3] if r[0] == "drawing" else None,
+                "drawing_id": str(r[1]) if r[0] == "drawing" else None,
+            }
+            for r in rows
+        ]
+
     def count(self) -> int:
         with self._pool.connection() as conn:
             return conn.execute("SELECT count(*) FROM registry_chunks").fetchone()[0]

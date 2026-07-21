@@ -30,6 +30,9 @@ class FileService:
         suffix = Path(filename).suffix.lower()
         extractor = extraction.get_extractor(suffix)
         if extractor is None:
+            guidance = extraction.FORMAT_GUIDANCE.get(suffix)
+            if guidance:
+                raise UnsupportedFileType(guidance)
             supported = ", ".join(sorted(extraction.supported_extensions()))
             raise UnsupportedFileType(
                 f"'{suffix or filename}' is not a supported file type. "

@@ -16,7 +16,7 @@ from app.exceptions import (
     UnsupportedFileType,
     VisionUnavailable,
 )
-from app.routers import chats, drawings, files, projects, query, review, stats
+from app.routers import chats, drawings, files, folders, projects, query, review, stats
 
 _ERROR_STATUS: list[tuple[type[BlueprintError], int]] = [
     (UnsupportedFileType, 422),
@@ -61,6 +61,7 @@ app.include_router(chats.router)
 app.include_router(stats.router)
 app.include_router(projects.router)
 app.include_router(drawings.router)
+app.include_router(folders.router)
 
 
 @app.get("/health")

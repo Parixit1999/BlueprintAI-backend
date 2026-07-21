@@ -26,7 +26,7 @@ class FileService:
             return None
         return self._embedder.embed(" ".join(texts))
 
-    def ingest_upload(self, filename: str, data: bytes) -> dict:
+    def ingest_upload(self, filename: str, data: bytes, folder_id: str | None = None) -> dict:
         suffix = Path(filename).suffix.lower()
         extractor = extraction.get_extractor(suffix)
         if extractor is None:
@@ -44,7 +44,7 @@ class FileService:
             )
 
         content_sha256 = hashlib.sha256(data).hexdigest()
-        file_id = self._files.create(filename, suffix.lstrip("."), content_sha256)
+        file_id = self._files.create(filename, suffix.lstrip("."), content_sha256, folder_id)
         s3_key = f"originals/{file_id}/{filename}"
         self._storage.upload_bytes(data, s3_key)
         return self._extract_and_store(file_id, filename, suffix, s3_key, data)

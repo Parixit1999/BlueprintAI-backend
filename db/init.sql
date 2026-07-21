@@ -67,6 +67,18 @@ CREATE TABLE IF NOT EXISTS registry_chunks (
 CREATE UNIQUE INDEX IF NOT EXISTS registry_chunks_entity_idx ON registry_chunks (entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS registry_chunks_project_idx ON registry_chunks (project_id);
 
+-- File manager: folders form a tree (parent_id); files live in at most one
+-- folder (null = root). Folder location is organizational only - extraction,
+-- project assignment, and RAG behavior are unaffected by where a file lives.
+CREATE TABLE IF NOT EXISTS folders (
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name       text NOT NULL,
+    parent_id  uuid REFERENCES folders(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS folders_parent_idx ON folders (parent_id);
+
 CREATE TABLE IF NOT EXISTS files (
     id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     filename      text NOT NULL,
@@ -80,11 +92,13 @@ CREATE TABLE IF NOT EXISTS files (
     render        jsonb,                    -- {s3_key, extents [xmin,ymin,xmax,ymax]} of the PNG render
     drawing_id    uuid REFERENCES drawings(id) ON DELETE SET NULL,  -- the logical drawing this file belongs to
     sheet_number  text,                     -- e.g. "23" for "SHT 23", or "6 of 31"
+    folder_id     uuid REFERENCES folders(id) ON DELETE SET NULL,   -- file-manager location (null = root)
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS files_content_hash_idx ON files (content_sha256);
 CREATE INDEX IF NOT EXISTS files_drawing_idx ON files (drawing_id);
+CREATE INDEX IF NOT EXISTS files_folder_idx ON files (folder_id);
 
 CREATE TABLE IF NOT EXISTS chunks (
     id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),

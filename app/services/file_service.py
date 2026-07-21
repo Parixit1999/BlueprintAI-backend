@@ -111,6 +111,31 @@ class FileService:
         data = self._storage.download_bytes(s3_key)
         return self._extract_and_store(file_id, filename, Path(filename).suffix.lower(), s3_key, data)
 
+    def reextract(self, file_id: str) -> dict:
+        """Re-read an already-extracted (or ingested) document with the current
+        extraction pipeline - used when the models improve (better text, better
+        region boxes). Existing knowledge-base chunks for the file are removed
+        and the document returns to 'needs review', so nothing enters the
+        knowledge base twice and the human checkpoint still applies."""
+        record = self._files.get(file_id)
+        if record is None:
+            raise FileNotFound("Document not found")
+        s3_key = record["s3_key"]
+        if not s3_key or s3_key == "pending":
+            raise UnsupportedFileType(
+                "The original file is not available for this document."
+            )
+        # drops this file's chunks and returns status to 'extracted'
+        self._files.release_ingest_claim(file_id)
+        data = self._storage.download_bytes(s3_key)
+        result = self._extract_and_store(
+            file_id, record["filename"], Path(record["filename"]).suffix.lower(),
+            s3_key, data,
+        )
+        # region boxes changed: the cached page renders are still valid (same
+        # original), but any drawing card mentioning this file is unaffected.
+        return result
+
     def list_files(self) -> list[dict]:
         return self._files.list_all(settings.duplicate_similarity_threshold)
 

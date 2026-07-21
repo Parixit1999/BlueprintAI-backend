@@ -67,6 +67,14 @@ def retry_extraction(file_id: str, service: Service, drawings: Drawings):
     return {**result, **match}
 
 
+@router.post("/{file_id}/reextract")
+def reextract(file_id: str, service: Service):
+    """Re-read an extracted/ingested document with the current pipeline (used
+    after model upgrades). Drops its knowledge-base chunks and returns it to
+    'needs review'. Sync def: blocking work runs in the worker threadpool."""
+    return service.reextract(file_id)
+
+
 @router.delete("/{file_id}", status_code=204)
 def delete_file(file_id: str, service: Service):
     """Delete a document, its chunks, and its stored files. Domain errors map via the app handler."""

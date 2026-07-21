@@ -120,6 +120,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     role       text NOT NULL,       -- user | assistant
     content    text NOT NULL,
     evidence   jsonb,               -- retrieval references on assistant messages
+    version_context jsonb,          -- which drawing version answered + sibling versions
     created_at timestamptz NOT NULL DEFAULT now()
 );
 

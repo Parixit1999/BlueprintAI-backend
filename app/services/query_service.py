@@ -6,7 +6,7 @@ should never cite regions from an unrelated drawing. We cast a wide net, pick
 the drawing that contains the best-matching region, and keep only that
 drawing's regions as both the model's context and the shown evidence.
 """
-from app.repositories import ChunkRepository, RegistryChunkRepository
+from app.repositories import ChunkRepository, DrawingRepository, RegistryChunkRepository
 from app.services.ai.base import EmbeddingProvider, TextGenerator
 
 SYSTEM_PROMPT = (
@@ -51,11 +51,59 @@ class QueryService:
         embedder: EmbeddingProvider,
         generator: TextGenerator,
         registry: RegistryChunkRepository | None = None,
+        drawings: DrawingRepository | None = None,
     ):
         self._chunks = chunks
         self._embedder = embedder
         self._generator = generator
         self._registry = registry
+        self._drawings = drawings
+
+    @staticmethod
+    def _version_label(d: dict) -> str:
+        label = d.get("dwg_number") or "unnumbered"
+        when = d.get("drawing_date") or d.get("year")
+        if when:
+            label += f" ({when})"
+        if d.get("version_note"):
+            label += f" - {d['version_note']}"
+        return label
+
+    def _version_context(self, hits: list[dict], candidates: list[dict]) -> dict | None:
+        """Version-aware retrieval: identify which drawing version answered and
+        disclose sibling versions, so answers never silently blend or hide
+        versions. Returns None when the answering drawing has no other versions."""
+        primary = hits[0]
+        group = primary.get("version_group_id")
+        if not group or self._drawings is None:
+            return None
+        siblings = [
+            v for v in self._drawings.versions(group)
+            if v["drawing_id"] != primary.get("drawing_id")
+        ]
+        if not siblings:
+            return None
+        # which sibling versions ALSO matched this question (their files appear
+        # in the candidate pool) - these are the "several relevant versions"
+        matched_ids = {
+            c.get("drawing_id")
+            for c in candidates
+            if c.get("version_group_id") == group and c.get("drawing_id") != primary.get("drawing_id")
+        }
+        return {
+            "used": {
+                "drawing_id": primary.get("drawing_id"),
+                "label": self._version_label(primary),
+            },
+            "other_versions": [
+                {
+                    "drawing_id": v["drawing_id"],
+                    "label": self._version_label(v),
+                    "also_matched": v["drawing_id"] in matched_ids,
+                }
+                for v in siblings
+            ],
+        }
 
     def _registry_answer(self, question: str, meta_hits: list[dict]) -> dict:
         """Answer from registry metadata cards (projects, drawings, sets,
@@ -72,7 +120,8 @@ class QueryService:
             "Context from the drawing registry (projects, drawings, sets, versions):\n"
             f"{context}\n\nQuestion: {question}",
         )
-        return {"answer": answer, "evidence": hits}
+        # registry cards describe their own version relationships in the text
+        return {"answer": answer, "evidence": hits, "version_context": None}
 
     def ask(self, question: str, top_k: int = 5, project_id: str | None = None) -> dict:
         """Answer a question over the ingested drawings AND the registry
@@ -94,7 +143,7 @@ class QueryService:
         if top_meta >= MIN_RELEVANCE and top_meta >= top_score:
             return self._registry_answer(question, meta_hits)
         if top_score < MIN_RELEVANCE:
-            return {"answer": NO_MATCH, "evidence": []}
+            return {"answer": NO_MATCH, "evidence": [], "version_context": None}
 
         # The drawing that owns the single best-matching region is the one the
         # question is about; keep only its regions so evidence stays coherent.
@@ -115,11 +164,23 @@ class QueryService:
             primary.get("project_name") and f"project {primary['project_name']}",
         ) if b]
         source_line = ", ".join(source_bits)
+
+        version_context = self._version_context(hits, candidates)
+        version_line = ""
+        if version_context:
+            others = "; ".join(v["label"] for v in version_context["other_versions"])
+            version_line = (
+                f"\nNote: this context is from version {version_context['used']['label']} "
+                f"of the drawing. Other versions exist: {others}. Mention in your answer "
+                "which version the information comes from, and do NOT claim anything about "
+                "the other versions' content - you have not seen them."
+            )
+
         context = "\n\n".join(
             f"[{i + 1}] ({h['region_type']}) {h['chunk_text']}" for i, h in enumerate(hits)
         )
         answer = self._generator.generate(
             SYSTEM_PROMPT,
-            f"Context from {source_line}:\n{context}\n\nQuestion: {question}",
+            f"Context from {source_line}:{version_line}\n{context}\n\nQuestion: {question}",
         )
-        return {"answer": answer, "evidence": hits}
+        return {"answer": answer, "evidence": hits, "version_context": version_context}

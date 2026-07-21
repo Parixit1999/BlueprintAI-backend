@@ -45,7 +45,8 @@ class ChatService:
         user_msg = self._chats.add_message(session_id, "user", question)
         result = self._query.ask(question, project_id=project_id)
         assistant_msg = self._chats.add_message(
-            session_id, "assistant", result["answer"], result["evidence"]
+            session_id, "assistant", result["answer"], result["evidence"],
+            result.get("version_context"),
         )
 
         if session["title"] == "New chat":

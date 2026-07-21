@@ -3,9 +3,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# ezdxf/matplotlib need a few system libs for font handling
+# ezdxf/matplotlib need freetype AND actual font files: with no fonts
+# installed, DXF text renders as empty outline rectangles
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libfreetype6 curl && rm -rf /var/lib/apt/lists/*
+    libfreetype6 fonts-dejavu-core curl && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

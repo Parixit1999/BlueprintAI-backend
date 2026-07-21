@@ -198,7 +198,7 @@ class QueryService:
             registry_extra, len(hits) + 1
         )
         hits = hits + registry_extra
-        answer = self._generator.generate(
+        prompt = (
             SYSTEM_PROMPT,
             "The relevant information spans MULTIPLE drawings. For every fact in "
             "your answer, say which drawing it comes from (use the drawing names "
@@ -210,7 +210,8 @@ class QueryService:
             f"{context}\n\nQuestion: {question}",
         )
         return {
-            "answer": answer,
+            "answer": None,
+            "prompt": prompt,
             "evidence": hits,
             "version_context": None,
             "multi_drawing": True,
@@ -226,14 +227,14 @@ class QueryService:
             f"[{i + 1}] ({h['entity_type']} record) {h['chunk_text']}"
             for i, h in enumerate(hits)
         )
-        answer = self._generator.generate(
+        prompt = (
             SYSTEM_PROMPT,
             "Context from the drawing registry (projects, drawings, sets, versions):\n"
             f"{context}\n\nQuestion: {question}",
         )
         # registry cards describe their own version relationships in the text;
         # answers may combine several records, each cited as evidence
-        return {"answer": answer, "evidence": hits, "version_context": None,
+        return {"answer": None, "prompt": prompt, "evidence": hits, "version_context": None,
                 "multi_drawing": len({h["entity_id"] for h in hits}) > 1}
 
     @staticmethod
@@ -253,10 +254,33 @@ class QueryService:
         project_id: str | None = None,
         history: list[dict] | None = None,
     ) -> dict:
-        """Answer a question over the ingested drawings AND the registry
-        metadata (projects, drawing metadata, sets, versions, file metadata),
-        optionally scoped to one project. `history` (recent session turns)
-        lets follow-up questions keep their conversation context."""
+        """Answer a question in one shot: plan (retrieve + build the prompt),
+        then generate. Streaming callers use plan() + stream() instead."""
+        result = self.plan(question, top_k, project_id, history)
+        prompt = result.pop("prompt", None)
+        if result["answer"] is None and prompt:
+            result["answer"] = self._generator.generate(*prompt)
+        return result
+
+    def stream(self, prompt: tuple[str, str]):
+        """Token stream for a prompt built by plan()."""
+        yield from self._generator.generate_stream(*prompt)
+
+    def plan(
+        self,
+        question: str,
+        top_k: int = 5,
+        project_id: str | None = None,
+        history: list[dict] | None = None,
+    ) -> dict:
+        """Everything except generation: retrieve over the ingested drawings
+        AND the registry metadata (projects, drawing metadata, sets, versions,
+        file metadata), optionally scoped to one project, and assemble the
+        generation prompt. Returns evidence/version_context/multi_drawing
+        immediately plus either a canned `answer` (no-match) or a `prompt` to
+        generate from - which is what makes evidence-first streaming possible.
+        `history` (recent session turns) lets follow-up questions keep their
+        conversation context."""
         q_embedding = self._embedder.embed(question)
         candidates = self._chunks.search(q_embedding, CANDIDATE_POOL, project_id)
         meta_hits = (
@@ -294,7 +318,8 @@ class QueryService:
         if top_meta >= MIN_RELEVANCE and top_meta >= top_score + REGISTRY_MARGIN:
             return self._registry_answer(convo_prefix + question, meta_hits)
         if top_score < MIN_RELEVANCE:
-            return {"answer": NO_MATCH, "evidence": [], "version_context": None, "multi_drawing": False}
+            return {"answer": NO_MATCH, "prompt": None, "evidence": [],
+                    "version_context": None, "multi_drawing": False}
 
         # Registry cards that are relevant but did not win outright still know
         # things the file content cannot (full drawing lists, version links,
@@ -361,10 +386,10 @@ class QueryService:
         context = "\n\n".join(
             f"[{i + 1}] ({h['region_type']}) {h['chunk_text']}" for i, h in enumerate(hits)
         ) + self._registry_section(registry_extra, len(hits) + 1)
-        answer = self._generator.generate(
+        prompt = (
             SYSTEM_PROMPT,
             f"{convo_prefix}Context from {source_line}:{version_line}\n{context}\n\n"
             f"Question: {question}",
         )
-        return {"answer": answer, "evidence": hits + registry_extra,
+        return {"answer": None, "prompt": prompt, "evidence": hits + registry_extra,
                 "version_context": version_context, "multi_drawing": False}

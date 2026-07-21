@@ -1,9 +1,12 @@
+import json
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.dependencies import chat_service
+from app.exceptions import BlueprintError
 from app.services.chat_service import ChatService
 
 router = APIRouter(prefix="/chats", tags=["chats"])
@@ -55,6 +58,27 @@ def delete_session(session_id: str, service: Service):
 @router.post("/{session_id}/messages")
 def ask(session_id: str, body: AskRequest, service: Service):
     return service.ask(session_id, body.question, body.project_id)
+
+
+@router.post("/{session_id}/messages/stream")
+def ask_stream(session_id: str, body: AskRequest, service: Service):
+    """SSE stream: `meta` (user message + evidence, sent before generation
+    starts), then `token` events as the answer is written, then `done` with
+    the stored assistant message. Sync generator: FastAPI iterates it in the
+    worker threadpool, so the blocking LLM stream stays off the event loop."""
+
+    def sse():
+        try:
+            for event, data in service.ask_stream(session_id, body.question, body.project_id):
+                yield f"event: {event}\ndata: {json.dumps(data)}\n\n"
+        except BlueprintError as exc:
+            yield f"event: error\ndata: {json.dumps({'detail': str(exc)})}\n\n"
+
+    return StreamingResponse(
+        sse(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/{session_id}/messages/{message_id}/feedback")

@@ -8,6 +8,7 @@ drawing's regions as both the model's context and the shown evidence.
 """
 from app.repositories import ChunkRepository, DrawingRepository, RegistryChunkRepository
 from app.services.ai.base import EmbeddingProvider, TextGenerator
+from app.services.matching import parse_content
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant that answers questions about engineering "
@@ -142,7 +143,43 @@ class QueryService:
             label += f", project {h['project_name']}"
         return label
 
-    def _multi_drawing_answer(self, question: str, groups: list[list[dict]]) -> dict:
+    def _anchored_cards(self, question: str, already: list[dict]) -> list[dict]:
+        """Identifier-anchored retrieval: a DWG number written in the question
+        is an exact reference, so include those drawings' registry cards
+        deterministically (every version in the group) instead of relying on
+        embedding similarity to surface them."""
+        if self._registry is None or self._drawings is None:
+            return []
+        norms = {c["norm"] for c in parse_content([question])["dwg_candidates"]}
+        if not norms:
+            return []
+        ids = [
+            d["drawing_id"]
+            for d in self._drawings.search_registry()
+            if d["dwg_number_norm"] in norms
+        ]
+        seen = {h["entity_id"] for h in already}
+        return [c for c in self._registry.get_by_entity(ids) if c["entity_id"] not in seen]
+
+    @staticmethod
+    def _registry_section(registry_extra: list[dict], start: int) -> str:
+        """Supplementary registry-card context appended to content answers.
+        Numbered continuing from the content citations so evidence refs align."""
+        if not registry_extra:
+            return ""
+        lines = "\n".join(
+            f"[{start + i}] ({h['entity_type']} record) {h['chunk_text']}"
+            for i, h in enumerate(registry_extra)
+        )
+        return (
+            "\n\n--- Registry records (project/drawing/set metadata; use these "
+            f"for counts, version lists, and set membership) ---\n{lines}"
+        )
+
+    def _multi_drawing_answer(
+        self, question: str, groups: list[list[dict]],
+        registry_extra: list[dict] | None = None,
+    ) -> dict:
         """Combine regions from several relevant drawings, clearly attributed
         per drawing, with every region cited as evidence."""
         hits: list[dict] = []
@@ -156,7 +193,11 @@ class QueryService:
             )
             sections.append(f"--- From drawing {self._group_label(top)} ---\n{lines}")
             hits.extend(kept)
-        context = "\n\n".join(sections)
+        registry_extra = registry_extra or []
+        context = "\n\n".join(sections) + self._registry_section(
+            registry_extra, len(hits) + 1
+        )
+        hits = hits + registry_extra
         answer = self._generator.generate(
             SYSTEM_PROMPT,
             "The relevant information spans MULTIPLE drawings. For every fact in "
@@ -255,6 +296,16 @@ class QueryService:
         if top_score < MIN_RELEVANCE:
             return {"answer": NO_MATCH, "evidence": [], "version_context": None, "multi_drawing": False}
 
+        # Registry cards that are relevant but did not win outright still know
+        # things the file content cannot (full drawing lists, version links,
+        # set membership) - blend them into the content answer as supplementary
+        # context instead of dropping them, so "how many drawings / which
+        # versions" phrasings get complete answers.
+        registry_extra = [h for h in meta_hits if h["score"] >= MIN_RELEVANCE]
+        registry_extra = (
+            self._anchored_cards(question, registry_extra) + registry_extra
+        )[:3]
+
         # Group candidates by the drawing (or file, when unassigned) they belong
         # to. If several drawings each match the question strongly, answer from
         # all of them with per-drawing attribution; otherwise keep the original
@@ -273,7 +324,9 @@ class QueryService:
             reverse=True,
         )
         if len(qualifying) >= 2:
-            return self._multi_drawing_answer(convo_prefix + question, qualifying)
+            return self._multi_drawing_answer(
+                convo_prefix + question, qualifying, registry_extra
+            )
 
         # Single-drawing mode: the drawing that owns the best-matching region is
         # the one the question is about; keep only its regions.
@@ -307,11 +360,11 @@ class QueryService:
 
         context = "\n\n".join(
             f"[{i + 1}] ({h['region_type']}) {h['chunk_text']}" for i, h in enumerate(hits)
-        )
+        ) + self._registry_section(registry_extra, len(hits) + 1)
         answer = self._generator.generate(
             SYSTEM_PROMPT,
             f"{convo_prefix}Context from {source_line}:{version_line}\n{context}\n\n"
             f"Question: {question}",
         )
-        return {"answer": answer, "evidence": hits, "version_context": version_context,
-                "multi_drawing": False}
+        return {"answer": answer, "evidence": hits + registry_extra,
+                "version_context": version_context, "multi_drawing": False}

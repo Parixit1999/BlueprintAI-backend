@@ -19,6 +19,10 @@ class ConfirmRequest(BaseModel):
 
 
 @router.post("/{file_id}/confirm")
-async def confirm_and_ingest(file_id: str, body: ConfirmRequest, service: Service):
-    """Domain errors (not found / already ingested) map to HTTP via the app-level handler."""
+def confirm_and_ingest(file_id: str, body: ConfirmRequest, service: Service):
+    """Domain errors (not found / already ingested) map to HTTP via the app-level handler.
+
+    Sync def: embedding each confirmed chunk is blocking, so FastAPI runs this in
+    its worker threadpool rather than on the event loop.
+    """
     return service.confirm_and_ingest(file_id, body.corrections, body.rejected)

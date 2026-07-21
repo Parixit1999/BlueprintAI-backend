@@ -11,5 +11,6 @@ Repo = Annotated[StatsRepository, Depends(stats_repository)]
 
 
 @router.get("")
-async def stats(repo: Repo):
+def stats(repo: Repo):
+    # Sync def: DB query runs in FastAPI's worker threadpool, off the event loop.
     return repo.snapshot()

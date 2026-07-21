@@ -17,5 +17,7 @@ class QueryRequest(BaseModel):
 
 
 @router.post("")
-async def query(request: QueryRequest, service: Service):
+def query(request: QueryRequest, service: Service):
+    # Sync def: embedding + LLM generation are blocking, so FastAPI runs this in
+    # its worker threadpool instead of on the event loop.
     return service.ask(request.question, request.top_k)

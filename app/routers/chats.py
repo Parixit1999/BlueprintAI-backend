@@ -19,31 +19,33 @@ class RenameRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
 
 
+# Sync def handlers: all do blocking work (DB, and for `ask` the embedding + LLM
+# generation), so FastAPI runs them in its worker threadpool, off the event loop.
 @router.post("")
-async def create_session(service: Service):
+def create_session(service: Service):
     return service.create_session()
 
 
 @router.get("")
-async def list_sessions(service: Service):
+def list_sessions(service: Service):
     return service.list_sessions()
 
 
 @router.get("/{session_id}")
-async def get_messages(session_id: str, service: Service):
+def get_messages(session_id: str, service: Service):
     return service.get_messages(session_id)
 
 
 @router.patch("/{session_id}")
-async def rename_session(session_id: str, body: RenameRequest, service: Service):
+def rename_session(session_id: str, body: RenameRequest, service: Service):
     return service.rename_session(session_id, body.title)
 
 
 @router.delete("/{session_id}", status_code=204)
-async def delete_session(session_id: str, service: Service):
+def delete_session(session_id: str, service: Service):
     service.delete_session(session_id)
 
 
 @router.post("/{session_id}/messages")
-async def ask(session_id: str, body: AskRequest, service: Service):
+def ask(session_id: str, body: AskRequest, service: Service):
     return service.ask(session_id, body.question)

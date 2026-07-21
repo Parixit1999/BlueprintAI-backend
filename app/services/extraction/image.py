@@ -7,12 +7,26 @@ ingestion. The model is instructed to return null rather than guess.
 import io
 import json
 import re
+from dataclasses import dataclass
 
 from PIL import Image, UnidentifiedImageError
 
 from app.exceptions import ExtractionFailed, InvalidFile
 from app.schemas import Confidence, ProvisionalChunk, RegionType
 from app.services.ai.base import VisionProvider
+
+
+@dataclass
+class VisionRegion:
+    """One region the vision model reported, with a resolution-independent
+    bbox in percentages (top-left origin). Callers map it into whatever
+    coordinate space their renderer uses - image pixels for a photo, PDF
+    points for a rasterized scanned page."""
+
+    region_type: RegionType
+    text: str | None
+    confidence: Confidence
+    bbox_pct: list[float] | None  # [x1, y1, x2, y2] as 0-100 percentages
 
 PROMPT = """You are extracting content from an engineering drawing image.
 
@@ -105,50 +119,77 @@ class ImageExtractor:
             img.save(buf, format="PNG")
             return buf.getvalue(), img.width, img.height
 
-    def extract(self, path: str) -> list[ProvisionalChunk]:
-        data = open(path, "rb").read()
+    def analyze(self, data: bytes) -> list[VisionRegion]:
+        """Run the vision model on raw image bytes and return regions with
+        percentage bboxes. Coordinate-space-agnostic so both photo uploads and
+        rasterized scanned-PDF pages can reuse it. Returns [] if nothing found;
+        callers decide whether an empty result is an error."""
         try:
             with Image.open(io.BytesIO(data)) as img:
                 img.verify()
-            with Image.open(io.BytesIO(data)) as img:
-                width, height = img.size
         except UnidentifiedImageError:
             raise InvalidFile("This file is not a valid image - it appears to be corrupt.")
 
         sent_bytes, sent_w, sent_h = self._downscale(data)
         raw = self._vision.analyze_image(sent_bytes, PROMPT)
-        chunks: list[ProvisionalChunk] = []
+        regions: list[VisionRegion] = []
         for item in _parse_response(raw):
             if not isinstance(item, dict):
                 continue
-            bbox = None
+            bbox_pct = None
             pct = item.get("bbox_pct")
             if isinstance(pct, list) and len(pct) == 4:
-                normalized = self._to_pct(pct, sent_w, sent_h)
-                if normalized is not None:
-                    x1, y1, x2, y2 = normalized
-                    # percentages from top-left -> pixel coords, y-up
-                    bbox = [
-                        round(x1 / 100 * width, 1),
-                        round(height - (y2 / 100 * height), 1),
-                        round(x2 / 100 * width, 1),
-                        round(height - (y1 / 100 * height), 1),
-                    ]
+                bbox_pct = self._to_pct(pct, sent_w, sent_h)
             text = item.get("text")
             confidence = item.get("confidence")
-            chunks.append(
-                ProvisionalChunk(
+            regions.append(
+                VisionRegion(
                     region_type=_REGION_MAP.get(item.get("type"), RegionType.note),
-                    chunk_text=str(text).strip() if text else None,
-                    bbox=bbox,
+                    text=str(text).strip() if text else None,
                     confidence=(
                         Confidence(confidence)
                         if confidence in {c.value for c in Confidence}
                         else Confidence.medium
                     ),
+                    bbox_pct=bbox_pct,
                 )
             )
+        return regions
 
+    @staticmethod
+    def region_to_chunk(
+        region: VisionRegion, xmax: float, ymax: float, page: int = 1
+    ) -> ProvisionalChunk:
+        """Map a percentage-space region into a chunk whose bbox is in the
+        renderer's y-up coordinate space (extents [0, 0, xmax, ymax])."""
+        bbox = None
+        if region.bbox_pct is not None:
+            x1, y1, x2, y2 = region.bbox_pct
+            # percentages from top-left -> extents coords, y-up
+            bbox = [
+                round(x1 / 100 * xmax, 1),
+                round(ymax - (y2 / 100 * ymax), 1),
+                round(x2 / 100 * xmax, 1),
+                round(ymax - (y1 / 100 * ymax), 1),
+            ]
+        return ProvisionalChunk(
+            region_type=region.region_type,
+            chunk_text=region.text,
+            bbox=bbox,
+            confidence=region.confidence,
+            page=page,
+        )
+
+    def extract(self, path: str) -> list[ProvisionalChunk]:
+        data = open(path, "rb").read()
+        try:
+            with Image.open(io.BytesIO(data)) as img:
+                width, height = img.size
+        except UnidentifiedImageError:
+            raise InvalidFile("This file is not a valid image - it appears to be corrupt.")
+
+        regions = self.analyze(data)
+        chunks = [self.region_to_chunk(r, width, height) for r in regions]
         if not chunks:
             raise ExtractionFailed(
                 "No text regions were detected in this image. If the drawing has "

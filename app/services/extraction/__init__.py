@@ -11,7 +11,8 @@ from app.services.extraction.pdf import PdfExtractor
 
 _FACTORIES = {
     ".dxf": lambda: DxfExtractor(),
-    ".pdf": lambda: PdfExtractor(),
+    # PDF gets a vision extractor too, for the scanned-PDF (no text layer) fallback
+    ".pdf": lambda: PdfExtractor(ImageExtractor(get_vision_provider())),
     ".png": lambda: ImageExtractor(get_vision_provider()),
     ".jpg": lambda: ImageExtractor(get_vision_provider()),
     ".jpeg": lambda: ImageExtractor(get_vision_provider()),

@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 
 from app.dependencies import file_service, render_service
@@ -14,13 +14,20 @@ Renderer = Annotated[RenderService, Depends(render_service)]
 
 
 @router.post("/upload")
-async def upload_file(file: UploadFile, service: Service):
-    """Upload a drawing (DXF, PDF, PNG, JPG); domain errors map to HTTP via the app-level handler."""
+async def upload_file(
+    file: UploadFile,
+    service: Service,
+    folder_id: Annotated[str | None, Form()] = None,
+):
+    """Upload a drawing (DXF, PDF, PNG, JPG), optionally into a folder; domain
+    errors map to HTTP via the app-level handler."""
     data = await file.read()
     # Extraction is slow and blocking (vision/LLM calls, DB writes). Run it in a
     # worker thread so a single in-progress upload can't freeze the event loop
     # and stall every other request (document list, chat, etc.).
-    return await run_in_threadpool(service.ingest_upload, file.filename or "unnamed", data)
+    return await run_in_threadpool(
+        service.ingest_upload, file.filename or "unnamed", data, folder_id
+    )
 
 
 # The handlers below do only synchronous, blocking work (DB queries, rendering),

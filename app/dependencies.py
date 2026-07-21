@@ -6,6 +6,7 @@ from app.repositories import (
     ChunkRepository,
     DrawingRepository,
     FileRepository,
+    FolderRepository,
     ProjectRepository,
     RegistryChunkRepository,
     StatsRepository,
@@ -13,6 +14,7 @@ from app.repositories import (
 from app.services.ai import get_embedding_provider, get_text_generator
 from app.services.chat_service import ChatService
 from app.services.file_service import FileService
+from app.services.folder_service import FolderService
 from app.services.project_service import DrawingService, ProjectService
 from app.services.query_service import QueryService
 from app.services.registry_index import RegistryIndexService
@@ -23,6 +25,10 @@ from app.services.storage import get_storage
 
 def file_service() -> FileService:
     return FileService(FileRepository(pool), get_storage(), get_embedding_provider())
+
+
+def folder_service() -> FolderService:
+    return FolderService(FolderRepository(pool), FileRepository(pool), file_service())
 
 
 def registry_index_service() -> RegistryIndexService:

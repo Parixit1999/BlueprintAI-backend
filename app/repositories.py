@@ -9,14 +9,45 @@ class FileRepository:
     def __init__(self, pool: ConnectionPool):
         self._pool = pool
 
-    def create(self, filename: str, file_type: str, content_sha256: str | None = None) -> str:
+    def create(
+        self, filename: str, file_type: str, content_sha256: str | None = None,
+        folder_id: str | None = None,
+    ) -> str:
         with self._pool.connection() as conn:
             row = conn.execute(
-                "INSERT INTO files (filename, file_type, s3_key, content_sha256) "
-                "VALUES (%s, %s, 'pending', %s) RETURNING id",
-                (filename, file_type, content_sha256),
+                "INSERT INTO files (filename, file_type, s3_key, content_sha256, folder_id) "
+                "VALUES (%s, %s, 'pending', %s, %s) RETURNING id",
+                (filename, file_type, content_sha256, folder_id),
             ).fetchone()
         return str(row[0])
+
+    def rename(self, file_id: str, filename: str) -> None:
+        with self._pool.connection() as conn:
+            conn.execute("UPDATE files SET filename = %s WHERE id = %s", (filename, file_id))
+
+    def move_to_folder(self, file_id: str, folder_id: str | None) -> None:
+        with self._pool.connection() as conn:
+            conn.execute("UPDATE files SET folder_id = %s WHERE id = %s", (folder_id, file_id))
+
+    def list_in_folder(self, folder_id: str | None) -> list[dict[str, Any]]:
+        """Files directly inside one folder (root = null), for the browser."""
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """SELECT f.id, f.filename, f.file_type, f.status, f.created_at, f.error,
+                          f.drawing_id, d.dwg_number
+                   FROM files f LEFT JOIN drawings d ON f.drawing_id = d.id
+                   WHERE f.folder_id IS NOT DISTINCT FROM %s
+                   ORDER BY f.filename""",
+                (folder_id,),
+            ).fetchall()
+        return [
+            {
+                "file_id": str(r[0]), "filename": r[1], "file_type": r[2], "status": r[3],
+                "created_at": r[4].isoformat(), "error": r[5],
+                "drawing_id": str(r[6]) if r[6] else None, "dwg_number": r[7],
+            }
+            for r in rows
+        ]
 
     def mark_extracted(
         self, file_id: str, s3_key: str, chunks: list[dict], embedding: list[float] | None = None
@@ -168,6 +199,94 @@ def _drawing_dict(r) -> dict[str, Any]:
         "source": r[12],
         "created_at": r[13].isoformat(),
     }
+
+
+class FolderRepository:
+    """File-manager folder tree."""
+
+    def __init__(self, pool: ConnectionPool):
+        self._pool = pool
+
+    def create(self, name: str, parent_id: str | None) -> dict[str, Any]:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "INSERT INTO folders (name, parent_id) VALUES (%s, %s) "
+                "RETURNING id, name, parent_id, created_at",
+                (name, parent_id),
+            ).fetchone()
+        return {"folder_id": str(row[0]), "name": row[1],
+                "parent_id": str(row[2]) if row[2] else None,
+                "created_at": row[3].isoformat()}
+
+    def get(self, folder_id: str) -> dict[str, Any] | None:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT id, name, parent_id FROM folders WHERE id = %s", (folder_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return {"folder_id": str(row[0]), "name": row[1],
+                "parent_id": str(row[2]) if row[2] else None}
+
+    def list_all(self) -> list[dict[str, Any]]:
+        """Flat list of every folder (for move dialogs); small scale."""
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT id, name, parent_id FROM folders ORDER BY name"
+            ).fetchall()
+        return [
+            {"folder_id": str(r[0]), "name": r[1], "parent_id": str(r[2]) if r[2] else None}
+            for r in rows
+        ]
+
+    def children(self, parent_id: str | None) -> list[dict[str, Any]]:
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """SELECT f.id, f.name,
+                          (SELECT count(*) FROM folders c WHERE c.parent_id = f.id),
+                          (SELECT count(*) FROM files x WHERE x.folder_id = f.id)
+                   FROM folders f
+                   WHERE f.parent_id IS NOT DISTINCT FROM %s ORDER BY f.name""",
+                (parent_id,),
+            ).fetchall()
+        return [
+            {"folder_id": str(r[0]), "name": r[1], "subfolder_count": r[2], "file_count": r[3]}
+            for r in rows
+        ]
+
+    def rename(self, folder_id: str, name: str) -> None:
+        with self._pool.connection() as conn:
+            conn.execute("UPDATE folders SET name = %s WHERE id = %s", (name, folder_id))
+
+    def move(self, folder_id: str, parent_id: str | None) -> None:
+        with self._pool.connection() as conn:
+            conn.execute("UPDATE folders SET parent_id = %s WHERE id = %s", (parent_id, folder_id))
+
+    def subtree_ids(self, folder_id: str) -> list[str]:
+        """The folder and every descendant (for cycle checks and recursive delete)."""
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """WITH RECURSIVE sub AS (
+                       SELECT id FROM folders WHERE id = %s
+                       UNION ALL
+                       SELECT f.id FROM folders f JOIN sub ON f.parent_id = sub.id
+                   ) SELECT id FROM sub""",
+                (folder_id,),
+            ).fetchall()
+        return [str(r[0]) for r in rows]
+
+    def file_ids_in(self, folder_ids: list[str]) -> list[str]:
+        if not folder_ids:
+            return []
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT id FROM files WHERE folder_id = ANY(%s::uuid[])", (folder_ids,)
+            ).fetchall()
+        return [str(r[0]) for r in rows]
+
+    def delete(self, folder_id: str) -> None:
+        with self._pool.connection() as conn:
+            conn.execute("DELETE FROM folders WHERE id = %s", (folder_id,))
 
 
 class ProjectRepository:

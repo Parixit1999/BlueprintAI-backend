@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     ollama_embed_model: str = "mxbai-embed-large"  # 1024-dim, same as Titan v2
     ollama_text_model: str = "llama3.1:8b"
     ollama_vision_model: str = "qwen2.5vl:7b"
+    # Vision/generation responses are streamed, so this is the max gap between
+    # chunks (covers model load + time-to-first-token), not the whole-response
+    # budget. Local vision on a detailed scanned drawing can be slow.
+    ollama_read_timeout: float = 300.0
 
     max_upload_bytes: int = 25 * 1024 * 1024  # 25 MB
 

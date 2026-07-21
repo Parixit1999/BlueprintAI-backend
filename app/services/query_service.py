@@ -21,8 +21,12 @@ SYSTEM_PROMPT = (
     "- Do NOT mention chunks, context, sources, indices, or reference numbers in "
     "your answer. The user is shown the source regions separately, so never write "
     "things like \"(Source: chunk 3)\" or \"according to the context\".\n"
-    "- Keep it concise and conversational; no bullet lists unless the answer is "
-    "genuinely a list of items from the drawing."
+    "- Keep it concise and conversational.\n"
+    "- Format for readability using GitHub-flavored markdown when it helps: use "
+    "a markdown table when the answer compares or enumerates several items "
+    "(drawings, versions, dimensions, materials), a short list when the answer "
+    "is genuinely a list, and plain prose otherwise. Never force a table onto a "
+    "single-fact answer."
 )
 
 # Cast a wide net, then narrow to one drawing.
@@ -158,7 +162,10 @@ class QueryService:
             "The relevant information spans MULTIPLE drawings. For every fact in "
             "your answer, say which drawing it comes from (use the drawing names "
             "given in the section headers). Do not blend facts from different "
-            "drawings into one unattributed statement.\n\n"
+            "drawings into one unattributed statement. If the question compares "
+            "attributes across the drawings, answer with a GitHub-flavored "
+            "markdown table: one row per attribute, one column per drawing, and "
+            "a dash for anything the context does not state.\n\n"
             f"{context}\n\nQuestion: {question}",
         )
         return {

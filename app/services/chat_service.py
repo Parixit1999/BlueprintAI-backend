@@ -94,8 +94,11 @@ class ChatService:
         if session is None:
             raise FileNotFound("Chat session not found")
 
+        # capture history BEFORE storing the new question, so the model sees
+        # the conversation exactly as the user did when asking
+        history = self._chats.list_messages(session_id)
         user_msg = self._chats.add_message(session_id, "user", question)
-        result = self._query.ask(question, project_id=project_id)
+        result = self._query.ask(question, project_id=project_id, history=history)
         assistant_msg = self._chats.add_message(
             session_id, "assistant", result["answer"], result["evidence"],
             result.get("version_context"),

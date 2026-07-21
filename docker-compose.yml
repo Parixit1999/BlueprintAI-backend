@@ -73,8 +73,17 @@ services:
       S3_ACCESS_KEY: minioadmin
       S3_SECRET_KEY: minioadmin
       OLLAMA_BASE_URL: http://host.docker.internal:11434
+      # Bedrock models (Claude vision/generation + Titan embeddings); flip
+      # back to "ollama" for fully offline development
+      AI_PROVIDER: bedrock
+      AWS_REGION: us-east-1
     extra_hosts:
       - "host.docker.internal:host-gateway"   # Linux compatibility
+    volumes:
+      # aws login session so the container can call Bedrock; read-write
+      # because the credential provider refreshes its token cache in
+      # ~/.aws/login/cache. Requires botocore[crt] (see requirements.txt)
+      - ~/.aws:/root/.aws
     ports:
       - "8000:8000"
 

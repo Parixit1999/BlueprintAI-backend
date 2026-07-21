@@ -60,6 +60,9 @@ _REGION_MAP = {
 def _parse_response(raw: str) -> list[dict]:
     # Preferred: the {"regions": [...]} object contract. Fall back to a bare
     # array for models/providers that return one.
+    raw = raw.strip()
+    if raw.startswith("```"):  # some providers fence their JSON
+        raw = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", raw)
     try:
         obj = json.loads(raw)
         if isinstance(obj, dict) and isinstance(obj.get("regions"), list):

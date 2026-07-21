@@ -15,8 +15,10 @@ class Settings(BaseSettings):
     s3_access_key: str | None = None
     s3_secret_key: str | None = None
 
-    bedrock_vision_model: str = "anthropic.claude-opus-4-8"
-    bedrock_text_model: str = "anthropic.claude-opus-4-8"
+    # Current Claude models on Bedrock require the cross-region inference
+    # profile ID (us. prefix) - the bare model ID is rejected for on-demand
+    bedrock_vision_model: str = "us.anthropic.claude-opus-4-8"
+    bedrock_text_model: str = "us.anthropic.claude-opus-4-8"
     bedrock_embed_model: str = "amazon.titan-embed-text-v2:0"
 
     # "ollama" (local) or "bedrock" (AWS) — controls embeddings + generation

@@ -33,10 +33,11 @@ SYSTEM_PROMPT = (
 # Cast a wide net, then narrow to one drawing.
 CANDIDATE_POOL = 30
 # Below this cosine similarity the best match is off-topic; nothing in the
-# knowledge base answers the question. Calibrated for snowflake-arctic-embed
-# (its similarity distribution runs hotter than the previous embedder):
-# genuine questions score >= ~0.82, off-topic ones <= ~0.61.
-MIN_RELEVANCE = 0.70
+# knowledge base answers the question. Calibrated for Titan embed v2, whose
+# distribution runs much cooler and wider than the local embedders: measured
+# on-topic questions score >= ~0.42, off-topic ones <= ~0.13. (For
+# snowflake-arctic-embed this was 0.70: on-topic >= ~0.82, off-topic <= ~0.61.)
+MIN_RELEVANCE = 0.30
 # Within the chosen drawing, keep only regions scoring at least this fraction
 # of the best region's score, so evidence is what actually supports the answer
 # rather than weak padding.
@@ -60,10 +61,13 @@ REGISTRY_POOL = 10
 # Registry cards are dense entity summaries full of registry vocabulary
 # ("drawing", "project", "set"), so they score generically high on any
 # drawing-flavored phrasing. A registry answer must therefore beat the best
-# file content by a clear margin. Calibrated for snowflake-arctic-embed:
-# registry-appropriate questions ("what contract covers X?") show margins
-# >= +0.07, content questions (even "drawings"-phrased ones) <= -0.05.
-REGISTRY_MARGIN = 0.03
+# file content by a clear margin. Calibrated for Titan embed v2: registry
+# questions ("what versions exist of X?") show margins >= +0.14, content
+# questions <= +0.09 (DWG-number-heavy comparisons run positive because the
+# cards name the drawings - the margin keeps them on the content path, and
+# borderline registry questions still get their cards via the blend +
+# identifier anchoring). (For snowflake-arctic-embed this was 0.03.)
+REGISTRY_MARGIN = 0.12
 
 
 class QueryService:

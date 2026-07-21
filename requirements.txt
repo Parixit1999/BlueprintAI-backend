@@ -3,7 +3,8 @@ uvicorn[standard]==0.35.0
 pydantic==2.11.7
 pydantic-settings==2.10.1
 python-multipart==0.0.20
-boto3==1.39.9
+boto3==1.43.53
+botocore[crt]  # aws login (login_session) credential provider
 psycopg[binary]==3.2.9
 pgvector==0.4.1
 ezdxf==1.4.2

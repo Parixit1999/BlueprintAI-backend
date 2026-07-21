@@ -64,6 +64,8 @@ class BedrockVision:
                     ],
                 }
             ],
-            inferenceConfig={"maxTokens": 4096},
+            # dense archive sheets extract dozens of regions; a low cap
+            # truncates the JSON mid-array and the whole extraction fails
+            inferenceConfig={"maxTokens": 32000},
         )
         return resp["output"]["message"]["content"][0]["text"]

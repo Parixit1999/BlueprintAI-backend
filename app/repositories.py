@@ -72,6 +72,28 @@ class FileRepository:
         with self._pool.connection() as conn:
             conn.execute("UPDATE files SET status = 'ingested' WHERE id = %s", (file_id,))
 
+    def claim_for_ingest(self, file_id: str) -> bool:
+        """Atomically move extracted -> ingesting. Ingestion embeds every
+        region (minutes for dense sheets), so this claim is what prevents a
+        second confirm - double-click, back button, second tab - from
+        double-inserting every chunk while the first run is still going."""
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "UPDATE files SET status = 'ingesting' "
+                "WHERE id = %s AND status = 'extracted' RETURNING id",
+                (file_id,),
+            ).fetchone()
+        return row is not None
+
+    def release_ingest_claim(self, file_id: str) -> None:
+        """Failed ingest: drop any partially inserted chunks and return the
+        file to 'extracted' so the user can review and confirm again."""
+        with self._pool.connection() as conn:
+            conn.execute("DELETE FROM chunks WHERE source_file_id = %s", (file_id,))
+            conn.execute(
+                "UPDATE files SET status = 'extracted' WHERE id = %s", (file_id,)
+            )
+
     def delete(self, file_id: str) -> None:
         with self._pool.connection() as conn:
             conn.execute("DELETE FROM files WHERE id = %s", (file_id,))

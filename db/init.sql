@@ -5,6 +5,48 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+-- Phase 1 drawing management: projects contain drawings; drawings may be
+-- grouped into sets and may have multiple versions; each drawing has files
+-- (sheets or iterations). Mirrors the client's "Drawings Number Book".
+
+CREATE TABLE IF NOT EXISTS projects (
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    number      text,                        -- project number, e.g. "1234" (matches pj1234 in filenames)
+    name        text NOT NULL,
+    description text,
+    source      text NOT NULL DEFAULT 'manual',  -- manual | book_import
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS drawing_sets (
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id uuid REFERENCES projects(id) ON DELETE SET NULL,
+    set_number text NOT NULL,                -- e.g. "12A" from the book's Set # column
+    name       text,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS drawings (
+    id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id       uuid REFERENCES projects(id) ON DELETE SET NULL,
+    set_id           uuid REFERENCES drawing_sets(id) ON DELETE SET NULL,
+    dwg_number       text,                   -- raw, as recorded ("12158-W-59")
+    dwg_number_norm  text,                   -- normalized for matching ("12158-W-59" canonical form)
+    description      text,
+    contract_number  text,                   -- raw; the book mixes notes into this column
+    drawing_date     text,                   -- raw as recorded ("2017-2018", "2018--")
+    year             int,                    -- best-effort parsed year for version ordering
+    sheet_count      int,
+    version_group_id uuid,                   -- drawings sharing this id are versions of the same drawing
+    version_note     text,
+    source           text NOT NULL DEFAULT 'manual',  -- manual | book_import | upload
+    created_at       timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS drawings_project_idx ON drawings (project_id);
+CREATE INDEX IF NOT EXISTS drawings_dwg_norm_idx ON drawings (dwg_number_norm);
+CREATE INDEX IF NOT EXISTS drawings_version_group_idx ON drawings (version_group_id);
+
 CREATE TABLE IF NOT EXISTS files (
     id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     filename      text NOT NULL,
@@ -16,10 +58,13 @@ CREATE TABLE IF NOT EXISTS files (
     embedding     vector(1024),             -- document-level embedding for semantic duplicate/similarity detection
     extraction    jsonb,                    -- provisional chunks awaiting HITL review
     render        jsonb,                    -- {s3_key, extents [xmin,ymin,xmax,ymax]} of the PNG render
+    drawing_id    uuid REFERENCES drawings(id) ON DELETE SET NULL,  -- the logical drawing this file belongs to
+    sheet_number  text,                     -- e.g. "23" for "SHT 23", or "6 of 31"
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS files_content_hash_idx ON files (content_sha256);
+CREATE INDEX IF NOT EXISTS files_drawing_idx ON files (drawing_id);
 
 CREATE TABLE IF NOT EXISTS chunks (
     id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),

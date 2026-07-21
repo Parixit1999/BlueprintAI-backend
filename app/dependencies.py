@@ -1,10 +1,18 @@
 """FastAPI dependency providers - composition root for services."""
 from app.config import settings
 from app.db import pool
-from app.repositories import ChatRepository, ChunkRepository, FileRepository, StatsRepository
+from app.repositories import (
+    ChatRepository,
+    ChunkRepository,
+    DrawingRepository,
+    FileRepository,
+    ProjectRepository,
+    StatsRepository,
+)
 from app.services.ai import get_embedding_provider, get_text_generator
 from app.services.chat_service import ChatService
 from app.services.file_service import FileService
+from app.services.project_service import DrawingService, ProjectService
 from app.services.query_service import QueryService
 from app.services.render_service import RenderService
 from app.services.review_service import ReviewService
@@ -13,6 +21,14 @@ from app.services.storage import get_storage
 
 def file_service() -> FileService:
     return FileService(FileRepository(pool), get_storage(), get_embedding_provider())
+
+
+def project_service() -> ProjectService:
+    return ProjectService(ProjectRepository(pool), DrawingRepository(pool))
+
+
+def drawing_service() -> DrawingService:
+    return DrawingService(DrawingRepository(pool), ProjectRepository(pool), FileRepository(pool))
 
 
 def review_service() -> ReviewService:

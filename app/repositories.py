@@ -127,6 +127,303 @@ class FileRepository:
         ]
 
 
+_PROJECT_COLS = "id, number, name, description, source, created_at"
+
+
+def _project_dict(r) -> dict[str, Any]:
+    return {
+        "project_id": str(r[0]),
+        "number": r[1],
+        "name": r[2],
+        "description": r[3],
+        "source": r[4],
+        "created_at": r[5].isoformat(),
+    }
+
+
+_DRAWING_COLS = (
+    "id, project_id, set_id, dwg_number, dwg_number_norm, description, contract_number, "
+    "drawing_date, year, sheet_count, version_group_id, version_note, source, created_at"
+)
+
+
+def _drawing_dict(r) -> dict[str, Any]:
+    return {
+        "drawing_id": str(r[0]),
+        "project_id": str(r[1]) if r[1] else None,
+        "set_id": str(r[2]) if r[2] else None,
+        "dwg_number": r[3],
+        "dwg_number_norm": r[4],
+        "description": r[5],
+        "contract_number": r[6],
+        "drawing_date": r[7],
+        "year": r[8],
+        "sheet_count": r[9],
+        "version_group_id": str(r[10]) if r[10] else None,
+        "version_note": r[11],
+        "source": r[12],
+        "created_at": r[13].isoformat(),
+    }
+
+
+class ProjectRepository:
+    def __init__(self, pool: ConnectionPool):
+        self._pool = pool
+
+    def create(self, name: str, number: str | None, description: str | None,
+               source: str = "manual") -> dict[str, Any]:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                f"INSERT INTO projects (name, number, description, source) "
+                f"VALUES (%s, %s, %s, %s) RETURNING {_PROJECT_COLS}",
+                (name, number, description, source),
+            ).fetchone()
+        return _project_dict(row)
+
+    def get(self, project_id: str) -> dict[str, Any] | None:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                f"SELECT {_PROJECT_COLS} FROM projects WHERE id = %s", (project_id,)
+            ).fetchone()
+        return _project_dict(row) if row else None
+
+    def update(self, project_id: str, fields: dict[str, Any]) -> None:
+        allowed = {"name", "number", "description"}
+        sets = {k: v for k, v in fields.items() if k in allowed}
+        if not sets:
+            return
+        clause = ", ".join(f"{k} = %s" for k in sets)
+        with self._pool.connection() as conn:
+            conn.execute(
+                f"UPDATE projects SET {clause} WHERE id = %s", (*sets.values(), project_id)
+            )
+
+    def delete(self, project_id: str) -> None:
+        with self._pool.connection() as conn:
+            conn.execute("DELETE FROM projects WHERE id = %s", (project_id,))
+
+    def list_all(self) -> list[dict[str, Any]]:
+        """Projects with drawing/set/file counts for the list page."""
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """SELECT p.id, p.number, p.name, p.description, p.source, p.created_at,
+                          (SELECT count(*) FROM drawings d WHERE d.project_id = p.id),
+                          (SELECT count(*) FROM drawing_sets s WHERE s.project_id = p.id),
+                          (SELECT count(*) FROM files f
+                             JOIN drawings d ON f.drawing_id = d.id
+                            WHERE d.project_id = p.id)
+                   FROM projects p ORDER BY p.name"""
+            ).fetchall()
+        return [
+            {**_project_dict(r), "drawing_count": r[6], "set_count": r[7], "file_count": r[8]}
+            for r in rows
+        ]
+
+
+class DrawingRepository:
+    def __init__(self, pool: ConnectionPool):
+        self._pool = pool
+
+    def create(self, fields: dict[str, Any]) -> dict[str, Any]:
+        """Insert a drawing; version_group_id defaults to the drawing's own id
+        so every drawing starts as the sole member of its version group."""
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                f"""INSERT INTO drawings
+                       (project_id, set_id, dwg_number, dwg_number_norm, description,
+                        contract_number, drawing_date, year, sheet_count, version_note, source)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING {_DRAWING_COLS}""",
+                (
+                    fields.get("project_id"),
+                    fields.get("set_id"),
+                    fields.get("dwg_number"),
+                    fields.get("dwg_number_norm"),
+                    fields.get("description"),
+                    fields.get("contract_number"),
+                    fields.get("drawing_date"),
+                    fields.get("year"),
+                    fields.get("sheet_count"),
+                    fields.get("version_note"),
+                    fields.get("source", "manual"),
+                ),
+            ).fetchone()
+            conn.execute(
+                "UPDATE drawings SET version_group_id = id WHERE id = %s AND version_group_id IS NULL",
+                (row[0],),
+            )
+        drawing = _drawing_dict(row)
+        drawing["version_group_id"] = drawing["version_group_id"] or drawing["drawing_id"]
+        return drawing
+
+    def get(self, drawing_id: str) -> dict[str, Any] | None:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                f"SELECT {_DRAWING_COLS} FROM drawings WHERE id = %s", (drawing_id,)
+            ).fetchone()
+        return _drawing_dict(row) if row else None
+
+    def update(self, drawing_id: str, fields: dict[str, Any]) -> None:
+        allowed = {
+            "project_id", "set_id", "dwg_number", "dwg_number_norm", "description",
+            "contract_number", "drawing_date", "year", "sheet_count", "version_note",
+        }
+        sets = {k: v for k, v in fields.items() if k in allowed}
+        if not sets:
+            return
+        clause = ", ".join(f"{k} = %s" for k in sets)
+        with self._pool.connection() as conn:
+            conn.execute(
+                f"UPDATE drawings SET {clause} WHERE id = %s", (*sets.values(), drawing_id)
+            )
+
+    def delete(self, drawing_id: str) -> None:
+        with self._pool.connection() as conn:
+            conn.execute("DELETE FROM drawings WHERE id = %s", (drawing_id,))
+
+    def list_for_project(self, project_id: str) -> list[dict[str, Any]]:
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                f"""SELECT {', '.join('d.' + c for c in _DRAWING_COLS.split(', '))},
+                           (SELECT count(*) FROM files f WHERE f.drawing_id = d.id),
+                           s.set_number
+                    FROM drawings d LEFT JOIN drawing_sets s ON d.set_id = s.id
+                    WHERE d.project_id = %s
+                    ORDER BY d.dwg_number_norm NULLS LAST, d.created_at""",
+                (project_id,),
+            ).fetchall()
+        return [
+            {**_drawing_dict(r), "file_count": r[14], "set_number": r[15]} for r in rows
+        ]
+
+    def versions(self, version_group_id: str) -> list[dict[str, Any]]:
+        """All drawings in a version group, oldest first (year, then created)."""
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                f"SELECT {_DRAWING_COLS} FROM drawings WHERE version_group_id = %s "
+                "ORDER BY year NULLS LAST, created_at",
+                (version_group_id,),
+            ).fetchall()
+        return [_drawing_dict(r) for r in rows]
+
+    def link_versions(self, drawing_id: str, other_drawing_id: str) -> None:
+        """Merge the two drawings' version groups into one."""
+        with self._pool.connection() as conn:
+            conn.execute(
+                """UPDATE drawings SET version_group_id =
+                       (SELECT version_group_id FROM drawings WHERE id = %s)
+                   WHERE version_group_id = (SELECT version_group_id FROM drawings WHERE id = %s)""",
+                (drawing_id, other_drawing_id),
+            )
+
+    def unlink_version(self, drawing_id: str) -> None:
+        """Split a drawing back out into its own version group."""
+        with self._pool.connection() as conn:
+            conn.execute(
+                "UPDATE drawings SET version_group_id = id WHERE id = %s", (drawing_id,)
+            )
+
+    def find_by_norm(self, dwg_number_norm: str) -> list[dict[str, Any]]:
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                f"SELECT {_DRAWING_COLS} FROM drawings WHERE dwg_number_norm = %s",
+                (dwg_number_norm,),
+            ).fetchall()
+        return [_drawing_dict(r) for r in rows]
+
+    def search_registry(self) -> list[dict[str, Any]]:
+        """Lightweight full-registry scan for the matcher: id, numbers, description,
+        project. 7k rows is fine to scan in-process for an MVP."""
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """SELECT d.id, d.dwg_number, d.dwg_number_norm, d.description,
+                          d.project_id, p.name, d.year
+                   FROM drawings d LEFT JOIN projects p ON d.project_id = p.id"""
+            ).fetchall()
+        return [
+            {
+                "drawing_id": str(r[0]),
+                "dwg_number": r[1],
+                "dwg_number_norm": r[2],
+                "description": r[3],
+                "project_id": str(r[4]) if r[4] else None,
+                "project_name": r[5],
+                "year": r[6],
+            }
+            for r in rows
+        ]
+
+    # --- sets ---
+
+    def create_set(self, project_id: str | None, set_number: str, name: str | None) -> dict[str, Any]:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "INSERT INTO drawing_sets (project_id, set_number, name) VALUES (%s, %s, %s) "
+                "RETURNING id, project_id, set_number, name, created_at",
+                (project_id, set_number, name),
+            ).fetchone()
+        return {
+            "set_id": str(row[0]),
+            "project_id": str(row[1]) if row[1] else None,
+            "set_number": row[2],
+            "name": row[3],
+            "created_at": row[4].isoformat(),
+        }
+
+    def list_sets(self, project_id: str) -> list[dict[str, Any]]:
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """SELECT s.id, s.project_id, s.set_number, s.name, s.created_at,
+                          (SELECT count(*) FROM drawings d WHERE d.set_id = s.id)
+                   FROM drawing_sets s WHERE s.project_id = %s ORDER BY s.set_number""",
+                (project_id,),
+            ).fetchall()
+        return [
+            {
+                "set_id": str(r[0]),
+                "project_id": str(r[1]) if r[1] else None,
+                "set_number": r[2],
+                "name": r[3],
+                "created_at": r[4].isoformat(),
+                "drawing_count": r[5],
+            }
+            for r in rows
+        ]
+
+    def delete_set(self, set_id: str) -> None:
+        with self._pool.connection() as conn:
+            conn.execute("UPDATE drawings SET set_id = NULL WHERE set_id = %s", (set_id,))
+            conn.execute("DELETE FROM drawing_sets WHERE id = %s", (set_id,))
+
+    # --- files on drawings ---
+
+    def files_for_drawing(self, drawing_id: str) -> list[dict[str, Any]]:
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """SELECT id, filename, file_type, status, sheet_number, created_at
+                   FROM files WHERE drawing_id = %s ORDER BY created_at""",
+                (drawing_id,),
+            ).fetchall()
+        return [
+            {
+                "file_id": str(r[0]),
+                "filename": r[1],
+                "file_type": r[2],
+                "status": r[3],
+                "sheet_number": r[4],
+                "created_at": r[5].isoformat(),
+            }
+            for r in rows
+        ]
+
+    def attach_file(self, file_id: str, drawing_id: str | None, sheet_number: str | None) -> None:
+        with self._pool.connection() as conn:
+            conn.execute(
+                "UPDATE files SET drawing_id = %s, sheet_number = %s WHERE id = %s",
+                (drawing_id, sheet_number, file_id),
+            )
+
+
 class ChatRepository:
     def __init__(self, pool: ConnectionPool):
         self._pool = pool

@@ -14,10 +14,11 @@ Service = Annotated[QueryService, Depends(query_service)]
 class QueryRequest(BaseModel):
     question: str
     top_k: int = 5
+    project_id: str | None = None  # optional: scope retrieval to one project
 
 
 @router.post("")
 def query(request: QueryRequest, service: Service):
     # Sync def: embedding + LLM generation are blocking, so FastAPI runs this in
     # its worker threadpool instead of on the event loop.
-    return service.ask(request.question, request.top_k)
+    return service.ask(request.question, request.top_k, request.project_id)

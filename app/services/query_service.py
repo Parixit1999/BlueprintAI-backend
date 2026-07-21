@@ -47,8 +47,12 @@ class QueryService:
         self._embedder = embedder
         self._generator = generator
 
-    def ask(self, question: str, top_k: int = 5) -> dict:
-        candidates = self._chunks.search(self._embedder.embed(question), CANDIDATE_POOL)
+    def ask(self, question: str, top_k: int = 5, project_id: str | None = None) -> dict:
+        """Answer a question over the ingested drawings, optionally scoped to
+        one project (Phase 2 integration with the project registry)."""
+        candidates = self._chunks.search(
+            self._embedder.embed(question), CANDIDATE_POOL, project_id
+        )
         top_score = candidates[0]["score"] if candidates else 0.0
         if top_score < MIN_RELEVANCE:
             return {"answer": NO_MATCH, "evidence": []}
@@ -63,11 +67,20 @@ class QueryService:
             if h["source_file_id"] == primary_file_id and h["score"] >= floor
         ][:MAX_EVIDENCE]
 
+        # Tell the model where the regions come from, so answers can reference
+        # the drawing naturally ("on drawing 11767-W-59 ...").
+        primary = hits[0]
+        source_bits = [b for b in (
+            primary.get("dwg_number") and f"drawing {primary['dwg_number']}",
+            primary.get("filename") and f"file {primary['filename']}",
+            primary.get("project_name") and f"project {primary['project_name']}",
+        ) if b]
+        source_line = ", ".join(source_bits)
         context = "\n\n".join(
             f"[{i + 1}] ({h['region_type']}) {h['chunk_text']}" for i, h in enumerate(hits)
         )
         answer = self._generator.generate(
             SYSTEM_PROMPT,
-            f"Context from the drawing:\n{context}\n\nQuestion: {question}",
+            f"Context from {source_line}:\n{context}\n\nQuestion: {question}",
         )
         return {"answer": answer, "evidence": hits}

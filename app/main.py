@@ -48,7 +48,11 @@ async def blueprint_error_handler(request: Request, exc: BlueprintError):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174"],
+    allow_origins=[
+        "http://localhost:5173",  # vite dev (default)
+        "http://localhost:5174",  # vite dev (alternate)
+        "http://localhost:5175",  # containerized frontend (docker compose)
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

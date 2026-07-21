@@ -128,7 +128,7 @@ class FileRepository:
         with self._pool.connection() as conn:
             rows = conn.execute(
                 """SELECT f.id, f.filename, f.file_type, f.status, f.created_at,
-                          f.error, f.drawing_id, d.dwg_number, count(c.id),
+                          f.error, f.drawing_id, d.dwg_number, f.auto_assigned, count(c.id),
                           (
                             SELECT json_agg(json_build_object(
                                      'file_id', o.id, 'filename', o.filename,
@@ -154,9 +154,10 @@ class FileRepository:
                 "error": r[5],
                 "drawing_id": str(r[6]) if r[6] else None,
                 "dwg_number": r[7],
-                "chunk_count": r[8],
-                "similar_documents": r[9] or [],
-                "is_duplicate": bool(r[9]),
+                "auto_assigned": r[8],
+                "chunk_count": r[9],
+                "similar_documents": r[10] or [],
+                "is_duplicate": bool(r[10]),
             }
             for r in rows
         ]
@@ -539,11 +540,15 @@ class DrawingRepository:
             for r in rows
         ]
 
-    def attach_file(self, file_id: str, drawing_id: str | None, sheet_number: str | None) -> None:
+    def attach_file(
+        self, file_id: str, drawing_id: str | None, sheet_number: str | None,
+        auto: bool = False,
+    ) -> None:
         with self._pool.connection() as conn:
             conn.execute(
-                "UPDATE files SET drawing_id = %s, sheet_number = %s WHERE id = %s",
-                (drawing_id, sheet_number, file_id),
+                "UPDATE files SET drawing_id = %s, sheet_number = %s, auto_assigned = %s "
+                "WHERE id = %s",
+                (drawing_id, sheet_number, auto if drawing_id else False, file_id),
             )
 
 

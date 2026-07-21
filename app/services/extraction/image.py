@@ -30,6 +30,7 @@ class VisionRegion:
     bbox_pct: list[float] | None  # [x1, y1, x2, y2] as 0-100 percentages
 
 PROMPT = """You are extracting content from an engineering drawing image.
+The image is {width}x{height} pixels.
 
 Find EVERY piece of visible text in the image - title block fields, drawing
 numbers, dimensions, notes, labels. Each one is its own region; do not merge
@@ -44,10 +45,12 @@ Return ONLY a JSON object of the form {"regions": [...]} where each element of
   "confidence": "high" | "medium" | "low"
 }
 
-bbox_pct values are percentages (0-100) of image width/height measured from
-the TOP-LEFT corner. Use confidence "low" for anything small, blurry, or
-partially obscured. If a value is illegible, set text to null and confidence
-to "low". No prose outside the JSON object."""
+bbox_pct is [x1, y1, x2, y2] in PIXELS of this {width}x{height} image,
+measured from the TOP-LEFT corner. Draw the box TIGHTLY around the text it
+contains - it is used to highlight the exact region on the drawing.
+Use confidence "low" for anything small, blurry, or partially obscured. If a
+value is illegible, set text to null and confidence to "low". No prose
+outside the JSON object."""
 
 _REGION_MAP = {
     "note": RegionType.note,
@@ -120,7 +123,10 @@ class ImageExtractor:
             return None  # degenerate box
         return [x1, y1, x2, y2]
 
-    MAX_SIDE = 1024
+    # Claude vision reads up to ~1568px on the long edge; sending more
+    # resolution than the old 1024 cap materially improves both text
+    # legibility and bbox precision on dense archive sheets.
+    MAX_SIDE = 1568
 
     @staticmethod
     def _downscale(data: bytes) -> tuple[bytes, int, int]:
@@ -146,7 +152,9 @@ class ImageExtractor:
             raise InvalidFile("This file is not a valid image - it appears to be corrupt.")
 
         sent_bytes, sent_w, sent_h = self._downscale(data)
-        raw = self._vision.analyze_image(sent_bytes, PROMPT)
+        # .replace, not .format - the prompt's JSON examples contain braces
+        prompt = PROMPT.replace("{width}", str(sent_w)).replace("{height}", str(sent_h))
+        raw = self._vision.analyze_image(sent_bytes, prompt)
         regions: list[VisionRegion] = []
         for item in _parse_response(raw):
             if not isinstance(item, dict):

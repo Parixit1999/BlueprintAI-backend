@@ -38,10 +38,26 @@ RELATIVE_FLOOR = 0.60
 # Hard cap on how many regions we surface as evidence.
 MAX_EVIDENCE = 6
 
+# Multi-drawing responses: a second drawing joins the answer only when its own
+# best region scores at least this fraction of the overall best - i.e. the
+# question genuinely concerns it too, not just vaguely.
+MULTI_DRAWING_FLOOR = 0.85
+# In multi-drawing mode, cap regions per drawing and drawings per answer so the
+# combined context stays focused.
+MAX_PER_DRAWING = 2
+MAX_DRAWINGS = 4
+
 NO_MATCH = "I couldn't find anything about that in the ingested drawings."
 
 
 REGISTRY_POOL = 10
+# Registry cards are dense entity summaries full of registry vocabulary
+# ("drawing", "project", "set"), so they score generically high on any
+# drawing-flavored phrasing. A registry answer must therefore beat the best
+# file content by a clear margin. Calibrated on real data: registry-appropriate
+# questions ("what contract covers X?") show margins >= +0.18, content
+# questions phrased with "drawings" show <= +0.06.
+REGISTRY_MARGIN = 0.12
 
 
 class QueryService:
@@ -105,6 +121,52 @@ class QueryService:
             ],
         }
 
+    @staticmethod
+    def _group_label(h: dict) -> str:
+        """Human-readable identity of the drawing a region came from."""
+        if h.get("dwg_number"):
+            label = h["dwg_number"]
+            when = h.get("drawing_date") or h.get("year")
+            if when:
+                label += f" ({when})"
+            if h.get("version_note"):
+                label += f" - {h['version_note']}"
+        else:
+            label = h.get("filename") or "unassigned file"
+        if h.get("project_name"):
+            label += f", project {h['project_name']}"
+        return label
+
+    def _multi_drawing_answer(self, question: str, groups: list[list[dict]]) -> dict:
+        """Combine regions from several relevant drawings, clearly attributed
+        per drawing, with every region cited as evidence."""
+        hits: list[dict] = []
+        sections: list[str] = []
+        for group in groups[:MAX_DRAWINGS]:
+            top = group[0]
+            kept = group[:MAX_PER_DRAWING]
+            lines = "\n".join(
+                f"[{len(hits) + j + 1}] ({h['region_type']}) {h['chunk_text']}"
+                for j, h in enumerate(kept)
+            )
+            sections.append(f"--- From drawing {self._group_label(top)} ---\n{lines}")
+            hits.extend(kept)
+        context = "\n\n".join(sections)
+        answer = self._generator.generate(
+            SYSTEM_PROMPT,
+            "The relevant information spans MULTIPLE drawings. For every fact in "
+            "your answer, say which drawing it comes from (use the drawing names "
+            "given in the section headers). Do not blend facts from different "
+            "drawings into one unattributed statement.\n\n"
+            f"{context}\n\nQuestion: {question}",
+        )
+        return {
+            "answer": answer,
+            "evidence": hits,
+            "version_context": None,
+            "multi_drawing": True,
+        }
+
     def _registry_answer(self, question: str, meta_hits: list[dict]) -> dict:
         """Answer from registry metadata cards (projects, drawings, sets,
         versions) when they match the question better than any file content."""
@@ -120,8 +182,10 @@ class QueryService:
             "Context from the drawing registry (projects, drawings, sets, versions):\n"
             f"{context}\n\nQuestion: {question}",
         )
-        # registry cards describe their own version relationships in the text
-        return {"answer": answer, "evidence": hits, "version_context": None}
+        # registry cards describe their own version relationships in the text;
+        # answers may combine several records, each cited as evidence
+        return {"answer": answer, "evidence": hits, "version_context": None,
+                "multi_drawing": len({h["entity_id"] for h in hits}) > 1}
 
     def ask(self, question: str, top_k: int = 5, project_id: str | None = None) -> dict:
         """Answer a question over the ingested drawings AND the registry
@@ -138,17 +202,36 @@ class QueryService:
         top_score = candidates[0]["score"] if candidates else 0.0
         top_meta = meta_hits[0]["score"] if meta_hits else 0.0
 
-        # Registry metadata wins when it matches the question better than any
-        # extracted drawing content ("what contract covers 11767-W-59?").
-        if top_meta >= MIN_RELEVANCE and top_meta >= top_score:
+        # Registry metadata wins only when it clearly dominates the extracted
+        # content ("what contract covers 11767-W-59?") - see REGISTRY_MARGIN.
+        if top_meta >= MIN_RELEVANCE and top_meta >= top_score + REGISTRY_MARGIN:
             return self._registry_answer(question, meta_hits)
         if top_score < MIN_RELEVANCE:
-            return {"answer": NO_MATCH, "evidence": [], "version_context": None}
+            return {"answer": NO_MATCH, "evidence": [], "version_context": None, "multi_drawing": False}
 
-        # The drawing that owns the single best-matching region is the one the
-        # question is about; keep only its regions so evidence stays coherent.
-        primary_file_id = candidates[0]["source_file_id"]
+        # Group candidates by the drawing (or file, when unassigned) they belong
+        # to. If several drawings each match the question strongly, answer from
+        # all of them with per-drawing attribution; otherwise keep the original
+        # single-drawing scoping so narrow questions stay precise.
         floor = top_score * RELATIVE_FLOOR
+        grouped: dict[str, list[dict]] = {}
+        for h in candidates:
+            if h["score"] < floor:
+                continue
+            key = h.get("drawing_id") or h["source_file_id"]
+            grouped.setdefault(key, []).append(h)
+        multi_floor = max(MIN_RELEVANCE, top_score * MULTI_DRAWING_FLOOR)
+        qualifying = sorted(
+            (g for g in grouped.values() if g[0]["score"] >= multi_floor),
+            key=lambda g: g[0]["score"],
+            reverse=True,
+        )
+        if len(qualifying) >= 2:
+            return self._multi_drawing_answer(question, qualifying)
+
+        # Single-drawing mode: the drawing that owns the best-matching region is
+        # the one the question is about; keep only its regions.
+        primary_file_id = candidates[0]["source_file_id"]
         hits = [
             h
             for h in candidates
@@ -183,4 +266,5 @@ class QueryService:
             SYSTEM_PROMPT,
             f"Context from {source_line}:{version_line}\n{context}\n\nQuestion: {question}",
         )
-        return {"answer": answer, "evidence": hits, "version_context": version_context}
+        return {"answer": answer, "evidence": hits, "version_context": version_context,
+                "multi_drawing": False}

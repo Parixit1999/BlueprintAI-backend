@@ -12,10 +12,17 @@ from app.services.storage import ObjectStorage
 
 
 class FileService:
-    def __init__(self, files: FileRepository, storage: ObjectStorage, embedder: EmbeddingProvider):
+    def __init__(
+        self,
+        files: FileRepository,
+        storage: ObjectStorage,
+        embedder: EmbeddingProvider,
+        index=None,  # RegistryIndexService; optional to keep tests/tools light
+    ):
         self._files = files
         self._storage = storage
         self._embedder = embedder
+        self._index = index
 
     def _document_embedding(self, chunks: list[dict]) -> list[float] | None:
         """One embedding representing the whole document, for semantic
@@ -125,3 +132,11 @@ class FileService:
             except Exception:
                 pass
         self._files.delete(file_id)
+        # the parent drawing's registry card lists its files - refresh it so
+        # registry answers stop mentioning the deleted document (best-effort:
+        # a stale card must never block the delete)
+        if self._index and record.get("drawing_id"):
+            try:
+                self._index.index_drawing(record["drawing_id"])
+            except Exception:
+                pass

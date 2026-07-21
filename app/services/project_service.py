@@ -50,17 +50,24 @@ class ProjectService:
         return self._projects.get(project_id)
 
     def delete(self, project_id: str) -> None:
+        """Metadata follows the project; documents outlive everything.
+
+        Drawings and sets are registry records that only make sense inside a
+        project, so they are deleted with it (and their cards removed).
+        Uploaded files are never destroyed by a metadata operation - the FK
+        unassigns them and they remain in the gallery, still searchable."""
         if self._projects.get(project_id) is None:
             raise FileNotFound("Project not found")
-        # capture members before the FK sets their project_id to NULL
-        orphaned = [d["drawing_id"] for d in self._drawings.list_for_project(project_id)]
-        orphaned_sets = [s["set_id"] for s in self._drawings.list_sets(project_id)]
+        drawings = [d["drawing_id"] for d in self._drawings.list_for_project(project_id)]
+        sets = [s["set_id"] for s in self._drawings.list_sets(project_id)]
+        for did in drawings:
+            self._drawings.delete(did)
+            self._index.remove("drawing", did)
+        for sid in sets:
+            self._drawings.delete_set(sid)
+            self._index.remove("set", sid)
         self._projects.delete(project_id)
         self._index.remove("project", project_id)
-        for sid in orphaned_sets:
-            self._index.remove("set", sid)
-        for did in orphaned:
-            self._index.index_drawing(did)
 
 
 class DrawingService:
@@ -225,6 +232,7 @@ class DrawingService:
             record = self._files.get(file_id)
             sheet = matching.parse_filename(record["filename"])["sheet_number"]
             self._drawings.attach_file(file_id, target["drawing_id"], sheet, auto=True)
+            self._index.index_drawing(target["drawing_id"])  # file list appears on the card
             auto = {
                 "drawing_id": target["drawing_id"],
                 "dwg_number": target["dwg_number"],

@@ -62,7 +62,10 @@ def render_service() -> RenderService:
 
 def chat_service() -> ChatService:
     # Single global user until auth arrives; then resolve user_id per request.
-    return ChatService(ChatRepository(pool), query_service(), settings.default_user_id)
+    return ChatService(
+        ChatRepository(pool), query_service(), settings.default_user_id,
+        ChunkRepository(pool), RegistryChunkRepository(pool),
+    )
 
 
 def stats_repository() -> StatsRepository:

@@ -1,17 +1,69 @@
 """Persistent chat: every question runs RAG; both turns are stored with the
-assistant's evidence references so past answers stay verifiable."""
+assistant's evidence references so past answers stay verifiable.
+
+RLHF: users rate assistant answers; each rating shifts the retrieval weight of
+the evidence that answer used (clamped), so consistently-downvoted regions rank
+lower in future retrieval and upvoted ones rank higher.
+"""
 from app.exceptions import FileNotFound
-from app.repositories import ChatRepository
+from app.repositories import ChatRepository, ChunkRepository, RegistryChunkRepository
 from app.services.query_service import QueryService
 
 TITLE_MAX = 60
 
+# Retrieval-weight shift per rating step (rating delta of +/-1 or +/-2 when
+# flipping an existing rating). Clamped in the repositories to [0.3, 2.0].
+FEEDBACK_STEP = 0.1
+
 
 class ChatService:
-    def __init__(self, chats: ChatRepository, query: QueryService, user_id: str):
+    def __init__(
+        self,
+        chats: ChatRepository,
+        query: QueryService,
+        user_id: str,
+        chunks: ChunkRepository | None = None,
+        registry: RegistryChunkRepository | None = None,
+    ):
         self._chats = chats
         self._query = query
         self._user_id = user_id
+        self._chunks = chunks
+        self._registry = registry
+
+    def rate_message(
+        self, session_id: str, message_id: str, rating: int, comment: str | None = None
+    ) -> dict:
+        """Record feedback on an assistant answer and reweight its evidence.
+        rating: 1 (helpful), -1 (not helpful), 0 (clear feedback)."""
+        if self._chats.get_session(session_id, self._user_id) is None:
+            raise FileNotFound("Chat session not found")
+        message = self._chats.get_message(session_id, message_id)
+        if message is None or message["role"] != "assistant":
+            raise FileNotFound("Assistant message not found")
+
+        if rating == 0:
+            previous = self._chats.clear_rating(message_id)
+        else:
+            previous = self._chats.set_rating(message_id, rating, comment)
+        delta = (rating - previous) * FEEDBACK_STEP
+        if delta:
+            evidence = message.get("evidence") or []
+            chunk_ids = [e["chunk_id"] for e in evidence if e.get("chunk_id")]
+            entities = [
+                (e["entity_type"], e["entity_id"])
+                for e in evidence
+                if e.get("entity_type") and e.get("entity_id")
+            ]
+            if self._chunks and chunk_ids:
+                self._chunks.adjust_weights(chunk_ids, delta)
+            if self._registry and entities:
+                self._registry.adjust_weights(entities, delta)
+        return {
+            "message_id": message_id,
+            "rating": rating if rating != 0 else None,
+            "reweighted_sources": len((message.get("evidence") or [])) if delta else 0,
+        }
 
     def create_session(self) -> dict:
         return self._chats.create_session(self._user_id, "New chat")

@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS registry_chunks (
     project_name text,
     chunk_text   text NOT NULL,          -- the searchable metadata card
     embedding    vector(1024),
+    feedback_weight float8 NOT NULL DEFAULT 1.0,  -- RLHF: adjusted by answer ratings
     updated_at   timestamptz NOT NULL DEFAULT now()
 );
 
@@ -98,6 +99,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     original_value      text,               -- model output before human correction
     corrected_value     text,               -- human-corrected value, if any
     embedding           vector(1024),
+    feedback_weight     float8 NOT NULL DEFAULT 1.0,  -- RLHF: adjusted by answer ratings
     created_at          timestamptz NOT NULL DEFAULT now()
 );
 
@@ -125,3 +127,13 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 
 CREATE INDEX IF NOT EXISTS chat_messages_session_idx ON chat_messages (session_id, created_at);
+
+-- RLHF: one rating per assistant message. Ratings adjust the feedback_weight
+-- of the evidence the answer used, so retrieval learns from user feedback.
+CREATE TABLE IF NOT EXISTS answer_feedback (
+    message_id uuid PRIMARY KEY REFERENCES chat_messages(id) ON DELETE CASCADE,
+    rating     smallint NOT NULL,   -- 1 = helpful, -1 = not helpful
+    comment    text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);

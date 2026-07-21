@@ -3,12 +3,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from app.dependencies import drawing_service
+from app.dependencies import drawing_service, registry_index_service
 from app.services.project_service import DrawingService
+from app.services.registry_index import RegistryIndexService
 
 router = APIRouter(tags=["drawings"])
 
 Service = Annotated[DrawingService, Depends(drawing_service)]
+Index = Annotated[RegistryIndexService, Depends(registry_index_service)]
 
 
 class DrawingCreate(BaseModel):
@@ -100,3 +102,11 @@ def assign_file(file_id: str, body: AssignFile, service: Service):
 @router.post("/files/{file_id}/unassign", status_code=204)
 def unassign_file(file_id: str, service: Service):
     service.unassign_file(file_id)
+
+
+@router.post("/registry/reindex")
+def reindex_registry(index: Index):
+    """Rebuild every registry metadata card (used after bulk changes or if
+    the embedding service was down during edits). Sync def: embedding work
+    runs in the threadpool."""
+    return index.reindex_all()

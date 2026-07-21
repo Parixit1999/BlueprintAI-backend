@@ -47,6 +47,25 @@ CREATE INDEX IF NOT EXISTS drawings_project_idx ON drawings (project_id);
 CREATE INDEX IF NOT EXISTS drawings_dwg_norm_idx ON drawings (dwg_number_norm);
 CREATE INDEX IF NOT EXISTS drawings_version_group_idx ON drawings (version_group_id);
 
+-- Registry metadata as retrievable RAG content: one searchable "card" per
+-- project/drawing/set, regenerated whenever the registry changes, so chat can
+-- answer questions about projects, drawing metadata, sets, and versions - not
+-- just file content.
+CREATE TABLE IF NOT EXISTS registry_chunks (
+    id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    entity_type  text NOT NULL,          -- project | drawing | set
+    entity_id    uuid NOT NULL,
+    project_id   uuid,                   -- scope filter (project cards point at themselves)
+    label        text NOT NULL,          -- display title, e.g. "11767-W-59" or the project name
+    project_name text,
+    chunk_text   text NOT NULL,          -- the searchable metadata card
+    embedding    vector(1024),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS registry_chunks_entity_idx ON registry_chunks (entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS registry_chunks_project_idx ON registry_chunks (project_id);
+
 CREATE TABLE IF NOT EXISTS files (
     id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     filename      text NOT NULL,

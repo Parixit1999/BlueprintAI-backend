@@ -78,12 +78,14 @@ class QueryService:
         generator: TextGenerator,
         registry: RegistryChunkRepository | None = None,
         drawings: DrawingRepository | None = None,
+        renders=None,  # RenderService; enables visual answers when multimodal
     ):
         self._chunks = chunks
         self._embedder = embedder
         self._generator = generator
         self._registry = registry
         self._drawings = drawings
+        self._renders = renders
 
     @staticmethod
     def _version_label(d: dict) -> str:
@@ -262,13 +264,28 @@ class QueryService:
         then generate. Streaming callers use plan() + stream() instead."""
         result = self.plan(question, top_k, project_id, history)
         prompt = result.pop("prompt", None)
+        image = result.pop("image", None)
         if result["answer"] is None and prompt:
-            result["answer"] = self._generator.generate(*prompt)
+            result["answer"] = self._generator.generate(*prompt, image=image)
         return result
 
-    def stream(self, prompt: tuple[str, str]):
+    def stream(self, prompt: tuple[str, str], image: bytes | None = None):
         """Token stream for a prompt built by plan()."""
-        yield from self._generator.generate_stream(*prompt)
+        yield from self._generator.generate_stream(*prompt, image=image)
+
+    def _drawing_image(self, file_id: str, page: int) -> bytes | None:
+        """Rendered page bytes for visual answers, bounded to the provider's
+        image limits. Best-effort: a missing render never blocks an answer."""
+        if self._renders is None:
+            return None
+        try:
+            from app.services.extraction.image import ImageExtractor
+
+            raw = self._renders.get_render_bytes(file_id, page)
+            sent, _w, _h = ImageExtractor._downscale(raw)
+            return sent
+        except Exception:
+            return None
 
     def plan(
         self,
@@ -390,10 +407,24 @@ class QueryService:
         context = "\n\n".join(
             f"[{i + 1}] ({h['region_type']}) {h['chunk_text']}" for i, h in enumerate(hits)
         ) + self._registry_section(registry_extra, len(hits) + 1)
+        # Visual answers: the question concerns ONE drawing, so the model also
+        # SEES its rendered page and can describe what is depicted - layout,
+        # geometry, how parts relate - not just recite extracted text.
+        image = self._drawing_image(primary_file_id, hits[0].get("page") or 1)
+        image_note = (
+            "\nYou can also SEE the drawing image. Use it to describe what the "
+            "drawing depicts (layout, geometry, how parts relate) when the "
+            "question calls for description - but quote exact values "
+            "(dimensions, part numbers, materials) only from the extracted "
+            "context, since that is what the citations point to."
+            if image
+            else ""
+        )
         prompt = (
             SYSTEM_PROMPT,
-            f"{convo_prefix}Context from {source_line}:{version_line}\n{context}\n\n"
+            f"{convo_prefix}Context from {source_line}:{version_line}{image_note}\n{context}\n\n"
             f"Question: {question}",
         )
-        return {"answer": None, "prompt": prompt, "evidence": hits + registry_extra,
+        return {"answer": None, "prompt": prompt, "image": image,
+                "evidence": hits + registry_extra,
                 "version_context": version_context, "multi_drawing": False}

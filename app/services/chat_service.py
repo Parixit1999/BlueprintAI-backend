@@ -128,6 +128,7 @@ class ChatService:
         history = self._chats.list_messages(session_id)
         user_msg = self._chats.add_message(session_id, "user", question)
         plan = self._query.plan(question, project_id=project_id, history=history)
+        image = plan.pop("image", None)
         yield "meta", {
             "user_message": user_msg,
             "evidence": plan["evidence"],
@@ -141,7 +142,7 @@ class ChatService:
         else:
             parts: list[str] = []
             try:
-                for piece in self._query.stream(plan["prompt"]):
+                for piece in self._query.stream(plan["prompt"], image):
                     parts.append(piece)
                     yield "token", {"t": piece}
             except Exception as exc:  # surface mid-generation failures to the UI

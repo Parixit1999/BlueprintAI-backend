@@ -62,6 +62,7 @@ def query_service() -> QueryService:
     return QueryService(
         ChunkRepository(pool), get_embedding_provider(), get_text_generator(),
         RegistryChunkRepository(pool), DrawingRepository(pool),
+        renders=render_service(),
     )
 
 

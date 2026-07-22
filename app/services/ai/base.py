@@ -13,9 +13,14 @@ class EmbeddingProvider(Protocol):
 
 
 class TextGenerator(Protocol):
-    def generate(self, system: str, user: str) -> str: ...
+    def generate(self, system: str, user: str, image: bytes | None = None) -> str:
+        """Generate an answer; `image` optionally lets multimodal providers
+        SEE the drawing being discussed. Text-only providers ignore it."""
+        ...
 
-    def generate_stream(self, system: str, user: str) -> Iterator[str]:
+    def generate_stream(
+        self, system: str, user: str, image: bytes | None = None
+    ) -> Iterator[str]:
         """Yield the answer in chunks as the model produces them. Providers
         that cannot stream may yield the whole answer once."""
         ...

@@ -36,8 +36,14 @@ Find EVERY piece of visible text in the image - title block fields, drawing
 numbers, dimensions, notes, labels. Each one is its own region; do not merge
 or skip any.
 
-Return ONLY a JSON object of the form {"regions": [...]} where each element of
-"regions" describes one text region:
+Return ONLY a JSON object of the form {"summary": "...", "regions": [...]}.
+
+"summary" is one rich paragraph describing what the drawing DEPICTS as an
+engineer would: what kind of drawing it is, what is shown (equipment,
+structures, plans, sections), the overall layout, and anything notable.
+Mention the drawing number and title if visible. Do not guess at values.
+
+Each element of "regions" describes one text region:
 {
   "text": "the exact text, or null if illegible - NEVER guess",
   "type": "note" | "dimension" | "title_block" | "bom",
@@ -58,6 +64,19 @@ _REGION_MAP = {
     "title_block": RegionType.title_block,
     "bom": RegionType.bom,
 }
+
+
+def _parse_summary(raw: str) -> str | None:
+    """The whole-drawing description from the {"summary": ...} contract."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", raw)
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    summary = obj.get("summary") if isinstance(obj, dict) else None
+    return summary.strip() if isinstance(summary, str) and summary.strip() else None
 
 
 def _parse_response(raw: str) -> list[dict]:
@@ -131,17 +150,30 @@ class ImageExtractor:
     # legibility and bbox precision on dense archive sheets.
     MAX_SIDE = 1568
 
+    # Bedrock's 5 MB image limit applies to the BASE64-encoded payload
+    # (raw x 4/3), so the raw bytes must stay under ~3.9 MB; keep margin
+    MAX_BYTES = 3_600_000
+
     @staticmethod
     def _downscale(data: bytes) -> tuple[bytes, int, int]:
         """Send the model a bounded, known-size image so absolute pixel
-        coordinates in its output can be mapped back reliably."""
+        coordinates in its output can be mapped back reliably. Dense scans at
+        1568px can exceed the provider's byte limit as PNG - fall back to JPEG
+        (visually lossless for scans), shrinking further only if needed."""
         with Image.open(io.BytesIO(data)) as img:
             img = img.convert("RGB")
             if max(img.size) > ImageExtractor.MAX_SIDE:
                 img.thumbnail((ImageExtractor.MAX_SIDE, ImageExtractor.MAX_SIDE))
             buf = io.BytesIO()
             img.save(buf, format="PNG")
-            return buf.getvalue(), img.width, img.height
+            if buf.tell() <= ImageExtractor.MAX_BYTES:
+                return buf.getvalue(), img.width, img.height
+            while True:
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=88)
+                if buf.tell() <= ImageExtractor.MAX_BYTES or min(img.size) < 400:
+                    return buf.getvalue(), img.width, img.height
+                img = img.resize((int(img.width * 0.85), int(img.height * 0.85)), Image.LANCZOS)
 
     def analyze(self, data: bytes) -> list[VisionRegion]:
         """Run the vision model on raw image bytes and return regions with
@@ -159,6 +191,16 @@ class ImageExtractor:
         prompt = PROMPT.replace("{width}", str(sent_w)).replace("{height}", str(sent_h))
         raw = self._vision.analyze_image(sent_bytes, prompt)
         regions: list[VisionRegion] = []
+        summary = _parse_summary(raw)
+        if summary:
+            regions.append(
+                VisionRegion(
+                    region_type=RegionType.summary,
+                    text=summary,
+                    confidence=Confidence.high,
+                    bbox_pct=None,  # describes the whole drawing
+                )
+            )
         for item in _parse_response(raw):
             if not isinstance(item, dict):
                 continue

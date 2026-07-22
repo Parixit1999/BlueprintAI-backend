@@ -69,10 +69,12 @@ class OllamaGenerator:
             ],
         }
 
-    def generate(self, system: str, user: str) -> str:
+    def generate(self, system: str, user: str, image: bytes | None = None) -> str:
+        # llama3.1 is text-only; the image is ignored (visual answers are a
+        # multimodal-provider capability)
         return _stream_chat(self._payload(system, user))
 
-    def generate_stream(self, system: str, user: str):
+    def generate_stream(self, system: str, user: str, image: bytes | None = None):
         yield from _iter_chat(self._payload(system, user))
 
 

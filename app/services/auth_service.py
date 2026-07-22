@@ -51,7 +51,9 @@ class AuthService:
     def logout(self, token: str) -> None:
         self._repo.delete_token(self._hash_token(token))
 
-    def change_password(self, user_id: str, current: str, new: str) -> None:
+    def change_password(
+        self, user_id: str, current: str, new: str, keep_token: str | None = None
+    ) -> None:
         user = self._repo.get_user_by_id(user_id)
         if user is None or not bcrypt.checkpw(current.encode(), user["password_hash"].encode()):
             time.sleep(_FAILED_LOGIN_DELAY_S)
@@ -61,8 +63,10 @@ class AuthService:
         self._repo.set_password_hash(
             user_id, bcrypt.hashpw(new.encode(), bcrypt.gensalt()).decode()
         )
-        # changing the password signs out every other session
-        self._repo.delete_tokens_for_user(user_id)
+        # sign out every OTHER session; the one making the change stays valid
+        self._repo.delete_tokens_for_user(
+            user_id, except_sha=self._hash_token(keep_token) if keep_token else None
+        )
 
     def ensure_seed_user(self, username: str, password: str | None) -> str | None:
         """Create the first account when no users exist. Returns the

@@ -53,5 +53,8 @@ def change_password(
     svc: AuthService = Depends(auth_service),
 ):
     svc.change_password(
-        request.state.user["id"], body.current_password, body.new_password
+        request.state.user["id"],
+        body.current_password,
+        body.new_password,
+        keep_token=_bearer(request),
     )

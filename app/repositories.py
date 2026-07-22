@@ -1090,6 +1090,12 @@ class AuthRepository:
         with self._pool.connection() as conn:
             conn.execute("DELETE FROM auth_tokens WHERE token_sha256 = %s", (token_sha256,))
 
-    def delete_tokens_for_user(self, user_id: str) -> None:
+    def delete_tokens_for_user(self, user_id: str, except_sha: str | None = None) -> None:
         with self._pool.connection() as conn:
-            conn.execute("DELETE FROM auth_tokens WHERE user_id = %s", (user_id,))
+            if except_sha is None:
+                conn.execute("DELETE FROM auth_tokens WHERE user_id = %s", (user_id,))
+            else:
+                conn.execute(
+                    "DELETE FROM auth_tokens WHERE user_id = %s AND token_sha256 <> %s",
+                    (user_id, except_sha),
+                )

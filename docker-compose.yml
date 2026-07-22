@@ -34,7 +34,11 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/blueprintai
+      # RDS (Phase B database): credentials resolve from Secrets Manager at
+      # startup - no password in this file. make up-local overrides this back
+      # to the local docker Postgres.
+      DATABASE_SECRET_ID: blueprintai/db
+      DATABASE_HOST: blueprintai-db.ccj86qq8ymmj.us-east-1.rds.amazonaws.com
       # Real S3 (Phase B storage). For local/offline development run
       # `make up-local` - it layers docker-compose.local.yml, which brings
       # MinIO back and points the backend at it. See that file for details.

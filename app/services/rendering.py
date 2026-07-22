@@ -17,8 +17,12 @@ from ezdxf.addons.drawing import Frontend, RenderContext
 from ezdxf.addons.drawing.config import BackgroundPolicy, Configuration
 from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
 from PIL import Image, ImageOps
+from pillow_heif import register_heif_opener
 
 from app.exceptions import RenderFailed
+
+# HEIC/HEIF renders through the normal image path once Pillow can open it
+register_heif_opener()
 
 MAX_WIDTH_INCHES = 12
 DPI = 150

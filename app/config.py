@@ -48,5 +48,12 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql://postgres:postgres@localhost:5432/blueprintai"
 
+    # RDS (Phase B): when both are set, the master credentials are fetched
+    # from Secrets Manager at startup and the connection URL is built from
+    # them - the password never appears in env files, compose, or logs.
+    # Leave unset (or empty) to use database_url directly.
+    database_secret_id: str | None = None
+    database_host: str | None = None
+
 
 settings = Settings()

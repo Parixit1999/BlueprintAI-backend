@@ -13,3 +13,5 @@ Pillow==11.3.0
 httpx==0.28.1
 psycopg-pool==3.2.6
 matplotlib==3.10.3
+pillow-heif==1.5.0
+olefile==0.47

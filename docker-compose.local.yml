@@ -53,6 +53,10 @@ services:
       minio-init:
         condition: service_completed_successfully
     environment:
+      # local docker Postgres instead of RDS (empty secret id disables the
+      # Secrets Manager lookup)
+      DATABASE_SECRET_ID: ""
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/blueprintai
       S3_BUCKET: blueprintai-files
       S3_ENDPOINT_URL: http://minio:9000
       # what the user's browser can reach - used only for presigned URLs

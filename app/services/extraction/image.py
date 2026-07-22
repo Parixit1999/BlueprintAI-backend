@@ -131,17 +131,30 @@ class ImageExtractor:
     # legibility and bbox precision on dense archive sheets.
     MAX_SIDE = 1568
 
+    # Bedrock's 5 MB image limit applies to the BASE64-encoded payload
+    # (raw x 4/3), so the raw bytes must stay under ~3.9 MB; keep margin
+    MAX_BYTES = 3_600_000
+
     @staticmethod
     def _downscale(data: bytes) -> tuple[bytes, int, int]:
         """Send the model a bounded, known-size image so absolute pixel
-        coordinates in its output can be mapped back reliably."""
+        coordinates in its output can be mapped back reliably. Dense scans at
+        1568px can exceed the provider's byte limit as PNG - fall back to JPEG
+        (visually lossless for scans), shrinking further only if needed."""
         with Image.open(io.BytesIO(data)) as img:
             img = img.convert("RGB")
             if max(img.size) > ImageExtractor.MAX_SIDE:
                 img.thumbnail((ImageExtractor.MAX_SIDE, ImageExtractor.MAX_SIDE))
             buf = io.BytesIO()
             img.save(buf, format="PNG")
-            return buf.getvalue(), img.width, img.height
+            if buf.tell() <= ImageExtractor.MAX_BYTES:
+                return buf.getvalue(), img.width, img.height
+            while True:
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=88)
+                if buf.tell() <= ImageExtractor.MAX_BYTES or min(img.size) < 400:
+                    return buf.getvalue(), img.width, img.height
+                img = img.resize((int(img.width * 0.85), int(img.height * 0.85)), Image.LANCZOS)
 
     def analyze(self, data: bytes) -> list[VisionRegion]:
         """Run the vision model on raw image bytes and return regions with

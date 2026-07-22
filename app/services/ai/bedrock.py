@@ -8,8 +8,15 @@ from app.config import settings
 @lru_cache(maxsize=1)
 def _client():
     import boto3
+    from botocore.config import Config
 
-    return boto3.client("bedrock-runtime", region_name=settings.aws_region)
+    return boto3.client(
+        "bedrock-runtime",
+        region_name=settings.aws_region,
+        # dense archive sheets extract dozens of regions in one response;
+        # the default 60s read timeout aborts those long generations
+        config=Config(read_timeout=600, connect_timeout=10, retries={"max_attempts": 2}),
+    )
 
 
 class BedrockEmbedding:
@@ -53,13 +60,16 @@ class BedrockGenerator:
 
 class BedrockVision:
     def analyze_image(self, image_bytes: bytes, prompt: str) -> str:
+        # the extractor sends PNG normally, JPEG when PNG would exceed the
+        # size limit - detect from magic bytes rather than widening the API
+        fmt = "png" if image_bytes[:8] == b"\x89PNG\r\n\x1a\n" else "jpeg"
         resp = _client().converse(
             modelId=settings.bedrock_vision_model,
             messages=[
                 {
                     "role": "user",
                     "content": [
-                        {"image": {"format": "png", "source": {"bytes": image_bytes}}},
+                        {"image": {"format": fmt, "source": {"bytes": image_bytes}}},
                         {"text": prompt},
                     ],
                 }

@@ -31,6 +31,8 @@ class ReviewService:
             for i, chunk in enumerate(record["extraction"]):
                 if i in rejected:
                     continue
+                if chunk.get("advisory"):
+                    continue  # pipeline disclosure, not drawing content
                 original = chunk.get("chunk_text")
                 corrected = corrections.get(i)
                 text = corrected if corrected is not None else original

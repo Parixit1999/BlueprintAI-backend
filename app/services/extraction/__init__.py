@@ -3,7 +3,7 @@
 To support a new format, add an extractor module and register it here -
 upload code and services stay untouched (open/closed).
 """
-from app.services.ai import get_vision_provider
+from app.services.ai import get_text_generator, get_vision_provider
 from app.services.extraction.base import Extractor
 from app.services.extraction.dwg import DwgExtractor
 from app.services.extraction.dxf import DxfExtractor
@@ -14,7 +14,9 @@ _FACTORIES = {
     ".dxf": lambda: DxfExtractor(),
     ".dwg": lambda: DwgExtractor(),  # via ODA converter when configured
     # PDF gets a vision extractor too, for the scanned-PDF (no text layer) fallback
-    ".pdf": lambda: PdfExtractor(ImageExtractor(get_vision_provider())),
+    ".pdf": lambda: PdfExtractor(
+        ImageExtractor(get_vision_provider()), generator=get_text_generator()
+    ),
     ".png": lambda: ImageExtractor(get_vision_provider()),
     ".jpg": lambda: ImageExtractor(get_vision_provider()),
     ".jpeg": lambda: ImageExtractor(get_vision_provider()),

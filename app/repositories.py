@@ -1017,3 +1017,79 @@ class ChunkRepository:
             }
             for r in rows
         ]
+
+
+class AuthRepository:
+    """Users and session tokens. Token digests only - never raw tokens."""
+
+    def __init__(self, pool):
+        self._pool = pool
+
+    def count_users(self) -> int:
+        with self._pool.connection() as conn:
+            return conn.execute("SELECT count(*) FROM users").fetchone()[0]
+
+    def create_user(self, username: str, password_hash: str) -> str:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "INSERT INTO users (username, password_hash) VALUES (%s, %s) RETURNING id",
+                (username.strip().lower(), password_hash),
+            ).fetchone()
+        return str(row[0])
+
+    def get_user_by_username(self, username: str) -> dict | None:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT id, username, password_hash FROM users WHERE username = %s",
+                (username,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {"id": str(row[0]), "username": row[1], "password_hash": row[2]}
+
+    def get_user_by_id(self, user_id: str) -> dict | None:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT id, username, password_hash FROM users WHERE id = %s",
+                (user_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {"id": str(row[0]), "username": row[1], "password_hash": row[2]}
+
+    def set_password_hash(self, user_id: str, password_hash: str) -> None:
+        with self._pool.connection() as conn:
+            conn.execute(
+                "UPDATE users SET password_hash = %s WHERE id = %s",
+                (password_hash, user_id),
+            )
+
+    def insert_token(self, token_sha256: str, user_id: str, ttl_days: int) -> None:
+        with self._pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO auth_tokens (token_sha256, user_id, expires_at) "
+                "VALUES (%s, %s, now() + make_interval(days => %s))",
+                (token_sha256, user_id, ttl_days),
+            )
+            # opportunistic cleanup so expired rows never accumulate
+            conn.execute("DELETE FROM auth_tokens WHERE expires_at < now()")
+
+    def get_user_by_token(self, token_sha256: str) -> dict | None:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT u.id, u.username FROM auth_tokens t "
+                "JOIN users u ON u.id = t.user_id "
+                "WHERE t.token_sha256 = %s AND t.expires_at > now()",
+                (token_sha256,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {"id": str(row[0]), "username": row[1]}
+
+    def delete_token(self, token_sha256: str) -> None:
+        with self._pool.connection() as conn:
+            conn.execute("DELETE FROM auth_tokens WHERE token_sha256 = %s", (token_sha256,))
+
+    def delete_tokens_for_user(self, user_id: str) -> None:
+        with self._pool.connection() as conn:
+            conn.execute("DELETE FROM auth_tokens WHERE user_id = %s", (user_id,))

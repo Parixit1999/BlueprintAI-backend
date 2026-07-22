@@ -153,3 +153,22 @@ CREATE TABLE IF NOT EXISTS answer_feedback (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Authentication: simple username/password accounts with server-side
+-- session tokens (revocable, expiring). Passwords are bcrypt-hashed;
+-- tokens are stored as sha256 digests so a database leak exposes neither.
+CREATE TABLE IF NOT EXISTS users (
+    id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    username      text NOT NULL UNIQUE,
+    password_hash text NOT NULL,
+    created_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS auth_tokens (
+    token_sha256 text PRIMARY KEY,
+    user_id      uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at   timestamptz NOT NULL,
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS auth_tokens_user_idx ON auth_tokens (user_id);

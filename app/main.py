@@ -30,9 +30,26 @@ _ERROR_STATUS: list[tuple[type[BlueprintError], int]] = [
 ]
 
 
+def _recover_orphaned_ingests() -> None:
+    """A restart guarantees no ingest worker survived (single-process app),
+    so any file still marked 'ingesting' is an orphaned claim - e.g. the
+    server restarted mid-ingest. Release it: drop the partial chunks and
+    return the file to 'extracted' so it can simply be confirmed again."""
+    with pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT id FROM files WHERE status = 'ingesting'"
+        ).fetchall()
+        for (file_id,) in rows:
+            conn.execute("DELETE FROM chunks WHERE source_file_id = %s", (file_id,))
+            conn.execute(
+                "UPDATE files SET status = 'extracted' WHERE id = %s", (file_id,)
+            )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     pool.open()
+    _recover_orphaned_ingests()
     yield
     pool.close()
 

@@ -259,10 +259,11 @@ class QueryService:
         top_k: int = 5,
         project_id: str | None = None,
         history: list[dict] | None = None,
+        file_id: str | None = None,
     ) -> dict:
         """Answer a question in one shot: plan (retrieve + build the prompt),
         then generate. Streaming callers use plan() + stream() instead."""
-        result = self.plan(question, top_k, project_id, history)
+        result = self.plan(question, top_k, project_id, history, file_id)
         prompt = result.pop("prompt", None)
         image = result.pop("image", None)
         if result["answer"] is None and prompt:
@@ -293,6 +294,7 @@ class QueryService:
         top_k: int = 5,
         project_id: str | None = None,
         history: list[dict] | None = None,
+        file_id: str | None = None,
     ) -> dict:
         """Everything except generation: retrieve over the ingested drawings
         AND the registry metadata (projects, drawing metadata, sets, versions,
@@ -322,8 +324,8 @@ class QueryService:
             )
             if prev_user:
                 carry_embedding = self._embedder.embed(f"{prev_user}\n{question}")
-                candidates = self._chunks.search(carry_embedding, CANDIDATE_POOL, project_id)
-                if self._registry is not None:
+                candidates = self._chunks.search(carry_embedding, CANDIDATE_POOL, project_id, file_id)
+                if self._registry is not None and file_id is None:
                     meta_hits = self._registry.search(carry_embedding, REGISTRY_POOL, project_id)
                 top_score = candidates[0]["score"] if candidates else 0.0
                 top_meta = meta_hits[0]["score"] if meta_hits else 0.0

@@ -17,6 +17,7 @@ Service = Annotated[ChatService, Depends(chat_service)]
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     project_id: str | None = None  # optional: scope retrieval to one project
+    file_id: str | None = None  # optional: chat about one specific document
 
 
 class RenameRequest(BaseModel):
@@ -57,7 +58,7 @@ def delete_session(session_id: str, service: Service):
 
 @router.post("/{session_id}/messages")
 def ask(session_id: str, body: AskRequest, service: Service):
-    return service.ask(session_id, body.question, body.project_id)
+    return service.ask(session_id, body.question, body.project_id, body.file_id)
 
 
 @router.post("/{session_id}/messages/stream")
@@ -69,7 +70,7 @@ def ask_stream(session_id: str, body: AskRequest, service: Service):
 
     def sse():
         try:
-            for event, data in service.ask_stream(session_id, body.question, body.project_id):
+            for event, data in service.ask_stream(session_id, body.question, body.project_id, body.file_id):
                 yield f"event: {event}\ndata: {json.dumps(data)}\n\n"
         except BlueprintError as exc:
             yield f"event: error\ndata: {json.dumps({'detail': str(exc)})}\n\n"

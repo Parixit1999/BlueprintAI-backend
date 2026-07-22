@@ -962,11 +962,13 @@ class ChunkRepository:
             )
 
     def search(
-        self, embedding: list[float], top_k: int, project_id: str | None = None
+        self, embedding: list[float], top_k: int, project_id: str | None = None,
+        file_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Vector search over ingested regions. Optionally scoped to one
-        project (via the file -> drawing -> project chain); results carry the
-        drawing/project context so evidence can show where a region lives."""
+        project (via the file -> drawing -> project chain) or to one document
+        (file-scoped chat); results carry the drawing/project context so
+        evidence can show where a region lives."""
         vector = json.dumps(embedding)
         with self._pool.connection() as conn:
             rows = conn.execute(
@@ -981,10 +983,11 @@ class ChunkRepository:
                         LEFT JOIN drawings d ON f.drawing_id = d.id
                         LEFT JOIN projects p ON d.project_id = p.id
                         LEFT JOIN drawing_sets s ON d.set_id = s.id
-                   WHERE %s::uuid IS NULL OR d.project_id = %s::uuid
+                   WHERE (%s::uuid IS NULL OR d.project_id = %s::uuid)
+                     AND (%s::uuid IS NULL OR c.source_file_id = %s::uuid)
                    ORDER BY (1 - (c.embedding <=> %s::vector)) * c.feedback_weight DESC
                    LIMIT %s""",
-                (vector, project_id, project_id, vector, top_k),
+                (vector, project_id, project_id, file_id, file_id, vector, top_k),
             ).fetchall()
         return [
             {

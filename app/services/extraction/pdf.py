@@ -8,6 +8,7 @@ or scanned drawing works without asking the user to convert it to PNG/JPG.
 Bboxes are converted to y-up coordinates (origin bottom-left) so the same
 viewer mapping works for every file type.
 """
+import json
 import re
 
 import pymupdf
@@ -33,10 +34,12 @@ class PdfExtractor:
     # crisper source before that cap.
     SCAN_DPI = 200
 
-    def __init__(self, image_extractor: ImageExtractor | None = None):
-        # Injected so scanned pages can fall back to vision. Optional so a
-        # text-only deployment (no vision provider) still works for vector PDFs.
+    def __init__(self, image_extractor: ImageExtractor | None = None, generator=None):
+        # image_extractor: scanned pages fall back to vision. generator (a
+        # TextGenerator): judges text-layer PDFs (drawing vs prose document)
+        # and writes their summary. Both optional and best-effort.
         self._image = image_extractor
+        self._generator = generator
 
     def extract(self, path: str) -> list[ProvisionalChunk]:
         try:
@@ -49,6 +52,13 @@ class PdfExtractor:
 
         chunks = self._extract_text(doc)
         if chunks:
+            # Text-layer PDFs never meet the vision model, so judge them from
+            # their text: is this actually a drawing sheet, or a prose document
+            # (resume, report, letter) that shouldn't be in a drawing archive?
+            # Also yields the summary region that vision-path documents get.
+            verdict_chunk = self._judge_text(chunks)
+            if verdict_chunk is not None:
+                chunks = [verdict_chunk] + chunks
             return chunks
 
         # No embedded text layer -> scanned/photographed PDF. Rasterize each
@@ -66,6 +76,45 @@ class PdfExtractor:
             "No extractable text found in this PDF - it appears to be a scanned "
             "document, and vision extraction is not available in this deployment."
         )
+
+    _JUDGE_PROMPT = (
+        "You are looking at text extracted from a PDF in an engineering "
+        "drawing archive. Decide whether the document is an engineering/"
+        "technical DRAWING sheet (plans, sections, title blocks, dimensions, "
+        "callouts) or a PROSE document (resume, report, letter, specification "
+        "text, form). Then write one paragraph describing the document.\n"
+        "Return ONLY JSON: {\"is_drawing\": true|false, \"summary\": \"...\"}"
+    )
+
+    def _judge_text(self, chunks: list[ProvisionalChunk]) -> ProvisionalChunk | None:
+        """Text-based is-it-a-drawing verdict + summary for vector PDFs.
+        Best-effort: any failure returns None and extraction proceeds as
+        before (no summary, no verdict)."""
+        if self._generator is None:
+            return None
+        try:
+            sample = "\n".join(
+                (c.chunk_text or "") for c in chunks[:60] if c.chunk_text
+            )[:4000]
+            raw = self._generator.generate(
+                self._JUDGE_PROMPT, f"Extracted text:\n{sample}"
+            ).strip()
+            if raw.startswith("```"):
+                raw = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", raw)
+            obj = json.loads(raw)
+            summary = obj.get("summary")
+            verdict = obj.get("is_drawing")
+            if not isinstance(summary, str) or not summary.strip():
+                return None
+            return ProvisionalChunk(
+                region_type=RegionType.summary,
+                chunk_text=summary.strip(),
+                confidence=Confidence.high,
+                page=1,
+                is_drawing=verdict if isinstance(verdict, bool) else None,
+            )
+        except Exception:
+            return None
 
     @staticmethod
     def _extract_text(doc: "pymupdf.Document") -> list[ProvisionalChunk]:

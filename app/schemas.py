@@ -41,6 +41,10 @@ class ProvisionalChunk(BaseModel):
     # vision verdict, set on the summary chunk only: False when the image is
     # not an engineering drawing (photo, screenshot, ...); None = not judged
     is_drawing: bool | None = None
+    # advisory chunks are pipeline disclosures (e.g. "converted from DWG,
+    # accuracy may be affected") - shown as a banner in the UI, never
+    # ingested into the knowledge base
+    advisory: bool = False
 
 
 class ExtractedField(BaseModel):

@@ -86,5 +86,6 @@ class DwgExtractor:
             bbox=None,
             confidence=Confidence.low,
             page=1,
+            advisory=True,
         )
         return [note, *chunks]

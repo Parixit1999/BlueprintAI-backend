@@ -366,10 +366,12 @@ class QueryService:
         conversation context."""
         search_question = self._contextualize(question, history) if history else question
         q_embedding = self._embedder.embed(search_question)
-        candidates = self._chunks.search(q_embedding, CANDIDATE_POOL, project_id)
+        candidates = self._chunks.search(q_embedding, CANDIDATE_POOL, project_id, file_id)
+        # file-scoped chat is about ONE document; other entities' registry
+        # cards are noise (identifier-anchored cards still apply below)
         meta_hits = (
             self._registry.search(q_embedding, REGISTRY_POOL, project_id)
-            if self._registry is not None
+            if self._registry is not None and file_id is None
             else []
         )
 
@@ -401,7 +403,11 @@ class QueryService:
         )
         if top_meta >= MIN_RELEVANCE and top_meta >= top_score + REGISTRY_MARGIN:
             return self._registry_answer(convo_prefix + question, meta_hits)
-        if top_score < MIN_RELEVANCE:
+        if top_score < MIN_RELEVANCE and file_id and candidates:
+            # scoped to one document the intent is unambiguous - answer from
+            # its best regions (the summary embeds close to almost anything)
+            pass
+        elif top_score < MIN_RELEVANCE:
             # off-corpus: greet / explain the tool / honest not-found - see
             # ASSISTANT_PROMPT. Generated (so it streams), never cited.
             return {"answer": None,

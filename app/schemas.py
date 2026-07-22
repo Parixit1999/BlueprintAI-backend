@@ -38,6 +38,9 @@ class ProvisionalChunk(BaseModel):
     bbox: list[float] | None = None
     confidence: Confidence = Confidence.high
     page: int = 1
+    # vision verdict, set on the summary chunk only: False when the image is
+    # not an engineering drawing (photo, screenshot, ...); None = not judged
+    is_drawing: bool | None = None
 
 
 class ExtractedField(BaseModel):

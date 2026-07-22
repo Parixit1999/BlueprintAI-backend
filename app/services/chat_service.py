@@ -89,7 +89,10 @@ class ChatService:
             raise FileNotFound("Chat session not found")
         self._chats.delete_session(session_id)
 
-    def ask(self, session_id: str, question: str, project_id: str | None = None) -> dict:
+    def ask(
+        self, session_id: str, question: str, project_id: str | None = None,
+        file_id: str | None = None,
+    ) -> dict:
         session = self._chats.get_session(session_id, self._user_id)
         if session is None:
             raise FileNotFound("Chat session not found")
@@ -98,7 +101,7 @@ class ChatService:
         # the conversation exactly as the user did when asking
         history = self._chats.list_messages(session_id)
         user_msg = self._chats.add_message(session_id, "user", question)
-        result = self._query.ask(question, project_id=project_id, history=history)
+        result = self._query.ask(question, project_id=project_id, history=history, file_id=file_id)
         assistant_msg = self._chats.add_message(
             session_id, "assistant", result["answer"], result["evidence"],
             result.get("version_context"),
@@ -112,7 +115,10 @@ class ChatService:
 
         return {"user_message": user_msg, "assistant_message": assistant_msg}
 
-    def ask_stream(self, session_id: str, question: str, project_id: str | None = None):
+    def ask_stream(
+        self, session_id: str, question: str, project_id: str | None = None,
+        file_id: str | None = None,
+    ):
         """Streaming variant of ask(): yields (event, data) tuples.
 
         Retrieval finishes before generation starts, so the evidence goes out
@@ -127,7 +133,7 @@ class ChatService:
 
         history = self._chats.list_messages(session_id)
         user_msg = self._chats.add_message(session_id, "user", question)
-        plan = self._query.plan(question, project_id=project_id, history=history)
+        plan = self._query.plan(question, project_id=project_id, history=history, file_id=file_id)
         image = plan.pop("image", None)
         yield "meta", {
             "user_message": user_msg,

@@ -10,8 +10,12 @@ import re
 from dataclasses import dataclass
 
 from PIL import Image, UnidentifiedImageError
+from pillow_heif import register_heif_opener
 
 from app.exceptions import ExtractionFailed, InvalidFile
+
+# Teach Pillow to open iPhone HEIC/HEIF photos (idempotent)
+register_heif_opener()
 from app.schemas import Confidence, ProvisionalChunk, RegionType
 from app.services.ai.base import VisionProvider
 from app.services.extraction.enhance import enhance_for_vision

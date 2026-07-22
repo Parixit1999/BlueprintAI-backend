@@ -7,6 +7,8 @@ from pathlib import Path
 
 from app.exceptions import FileNotFound, RenderFailed
 from app.repositories import FileRepository
+from app.services.extraction.dwg import convert_to_dxf
+from app.services.extraction.rvt import extract_preview_png
 from app.services.rendering import render_dxf, render_image, render_pdf_page
 from app.services.storage import ObjectStorage
 
@@ -67,6 +69,22 @@ class RenderService:
             try:
                 if suffix == ".dxf":
                     png, extents = render_dxf(tmp.name)
+                elif suffix == ".dwg":
+                    # render the same DXF conversion extraction used, so
+                    # region bboxes line up with what is on screen
+                    with tempfile.TemporaryDirectory() as out_dir:
+                        dxf_path = convert_to_dxf(tmp.name, out_dir)
+                        png, extents = render_dxf(str(dxf_path))
+                elif suffix == ".rvt":
+                    preview = extract_preview_png(tmp.name)
+                    if preview is None:
+                        raise RenderFailed(
+                            "This Revit file has no embedded preview image to display."
+                        )
+                    with tempfile.NamedTemporaryFile(suffix=".png") as ptmp:
+                        ptmp.write(preview)
+                        ptmp.flush()
+                        png, extents = render_image(ptmp.name)
                 elif suffix == ".pdf":
                     png, extents = render_pdf_page(tmp.name, page)
                 else:

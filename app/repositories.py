@@ -50,13 +50,15 @@ class FileRepository:
         ]
 
     def mark_extracted(
-        self, file_id: str, s3_key: str, chunks: list[dict], embedding: list[float] | None = None
+        self, file_id: str, s3_key: str, chunks: list[dict], embedding: list[float] | None = None,
+        is_drawing: bool | None = None,
     ) -> None:
         with self._pool.connection() as conn:
             conn.execute(
                 "UPDATE files SET s3_key = %s, status = 'extracted', extraction = %s, "
-                "embedding = %s, error = NULL WHERE id = %s",
-                (s3_key, json.dumps(chunks), json.dumps(embedding) if embedding else None, file_id),
+                "embedding = %s, is_drawing = %s, error = NULL WHERE id = %s",
+                (s3_key, json.dumps(chunks), json.dumps(embedding) if embedding else None,
+                 is_drawing, file_id),
             )
 
     def mark_failed(self, file_id: str, s3_key: str, error: str) -> None:
@@ -102,7 +104,7 @@ class FileRepository:
         with self._pool.connection() as conn:
             row = conn.execute(
                 "SELECT id, filename, file_type, status, extraction, created_at, s3_key, render, "
-                "content_sha256, error, drawing_id FROM files WHERE id = %s",
+                "content_sha256, error, drawing_id, is_drawing FROM files WHERE id = %s",
                 (file_id,),
             ).fetchone()
         if row is None:
@@ -119,6 +121,7 @@ class FileRepository:
             "content_sha256": row[8],
             "error": row[9],
             "drawing_id": str(row[10]) if row[10] else None,
+            "is_drawing": row[11],
         }
 
     def list_render_keys(self, file_id: str) -> list[str]:
@@ -152,6 +155,7 @@ class FileRepository:
             rows = conn.execute(
                 """SELECT f.id, f.filename, f.file_type, f.status, f.created_at,
                           f.error, f.drawing_id, d.dwg_number, f.auto_assigned, count(c.id),
+                          f.is_drawing,
                           (
                             SELECT json_agg(json_build_object(
                                      'file_id', o.id, 'filename', o.filename,
@@ -179,8 +183,9 @@ class FileRepository:
                 "dwg_number": r[7],
                 "auto_assigned": r[8],
                 "chunk_count": r[9],
-                "similar_documents": r[10] or [],
-                "is_duplicate": bool(r[10]),
+                "is_drawing": r[10],
+                "similar_documents": r[11] or [],
+                "is_duplicate": bool(r[11]),
             }
             for r in rows
         ]

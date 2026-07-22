@@ -91,8 +91,14 @@ class FileService:
                 raise
 
         embedding = self._document_embedding(chunks)
-        self._files.mark_extracted(file_id, s3_key, chunks, embedding)
-        return {"file_id": file_id, "filename": filename, "chunks": chunks}
+        # File-level verdict from the vision summaries (one per page): flagged
+        # as not-a-drawing only when EVERY judged page says so; None = the
+        # extractor made no judgement (CAD files are drawings by definition).
+        verdicts = [c.get("is_drawing") for c in chunks if c.get("is_drawing") is not None]
+        is_drawing = None if not verdicts else any(verdicts)
+        self._files.mark_extracted(file_id, s3_key, chunks, embedding, is_drawing)
+        return {"file_id": file_id, "filename": filename, "chunks": chunks,
+                "is_drawing": is_drawing}
 
     def retry_extraction(self, file_id: str) -> dict:
         """Re-run extraction on the stored original of a failed (or stuck
@@ -144,7 +150,8 @@ class FileService:
         if record is None:
             return None
         return {"file_id": file_id, "status": record["status"],
-                "filename": record["filename"], "chunks": record["extraction"]}
+                "filename": record["filename"], "is_drawing": record.get("is_drawing"),
+                "chunks": record["extraction"]}
 
     def delete_file(self, file_id: str) -> None:
         record = self._files.get(file_id)

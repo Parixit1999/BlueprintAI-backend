@@ -87,7 +87,8 @@ CREATE TABLE IF NOT EXISTS files (
     status        text NOT NULL DEFAULT 'uploaded',  -- uploaded | extracted | reviewed | ingested | failed
     error         text,                     -- extraction failure message when status = 'failed'
     content_sha256 text,                    -- hash of the original bytes (exact-match signal)
-    embedding     vector(1024),             -- document-level embedding for semantic duplicate/similarity detection
+    embedding     vector(1024),
+    is_drawing    boolean,             -- vision verdict; false = not an engineering drawing             -- document-level embedding for semantic duplicate/similarity detection
     extraction    jsonb,                    -- provisional chunks awaiting HITL review
     render        jsonb,                    -- {s3_key, extents [xmin,ymin,xmax,ymax]} of the PNG render
     drawing_id    uuid REFERENCES drawings(id) ON DELETE SET NULL,  -- the logical drawing this file belongs to

@@ -28,6 +28,7 @@ class VisionRegion:
     text: str | None
     confidence: Confidence
     bbox_pct: list[float] | None  # [x1, y1, x2, y2] as 0-100 percentages
+    is_drawing: bool | None = None  # summary region only: vision verdict
 
 PROMPT = """You are extracting content from an engineering drawing image.
 The image is {width}x{height} pixels.
@@ -36,7 +37,11 @@ Find EVERY piece of visible text in the image - title block fields, drawing
 numbers, dimensions, notes, labels. Each one is its own region; do not merge
 or skip any.
 
-Return ONLY a JSON object of the form {"summary": "...", "regions": [...]}.
+Return ONLY a JSON object of the form
+{"is_drawing": true|false, "summary": "...", "regions": [...]}.
+
+"is_drawing" is false when the image is NOT an engineering/technical drawing
+(a photo, screenshot, document scan of prose, etc.). Judge honestly.
 
 "summary" is one rich paragraph describing what the drawing DEPICTS as an
 engineer would: what kind of drawing it is, what is shown (equipment,
@@ -64,6 +69,19 @@ _REGION_MAP = {
     "title_block": RegionType.title_block,
     "bom": RegionType.bom,
 }
+
+
+def _parse_is_drawing(raw: str) -> bool | None:
+    """The explicit is-this-a-drawing verdict; None when absent/unparseable."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", raw)
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    verdict = obj.get("is_drawing") if isinstance(obj, dict) else None
+    return verdict if isinstance(verdict, bool) else None
 
 
 def _parse_summary(raw: str) -> str | None:
@@ -199,6 +217,7 @@ class ImageExtractor:
                     text=summary,
                     confidence=Confidence.high,
                     bbox_pct=None,  # describes the whole drawing
+                    is_drawing=_parse_is_drawing(raw),
                 )
             )
         for item in _parse_response(raw):
@@ -243,6 +262,7 @@ class ImageExtractor:
         return ProvisionalChunk(
             region_type=region.region_type,
             chunk_text=region.text,
+            is_drawing=region.is_drawing,
             bbox=bbox,
             confidence=region.confidence,
             page=page,

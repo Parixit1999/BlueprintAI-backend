@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     # Single-user mode for now; auth later just replaces this per-request.
     default_user_id: str = "global"
 
+    # Seed password for the first 'admin' account (used only when the users
+    # table is empty). Leave unset to have a random one generated and logged
+    # once at startup.
+    initial_admin_password: str | None = None
+
     database_url: str = "postgresql://postgres:postgres@localhost:5432/blueprintai"
 
     # RDS (Phase B): when both are set, the master credentials are fetched

@@ -54,7 +54,38 @@ MULTI_DRAWING_FLOOR = 0.85
 MAX_PER_DRAWING = 2
 MAX_DRAWINGS = 4
 
-NO_MATCH = "I couldn't find anything about that in the ingested drawings."
+# When nothing in the knowledge base matches, the answer is generated from
+# this prompt instead of a flat refusal: greetings and "how do I use this?"
+# get a helpful, app-aware reply, and drawing-content questions get an honest
+# "not found" plus what to check. No evidence is attached either way.
+ASSISTANT_PROMPT = (
+    "You are the assistant inside BlueprintAI, a drawing-intelligence tool for "
+    "engineering drawing archives. The user's message did not match any content "
+    "in their drawing knowledge base.\n\n"
+    "How to respond:\n"
+    "- If it is a greeting or small talk, reply warmly in one or two sentences "
+    "and mention you can answer questions about their drawings.\n"
+    "- If they ask what you can do or how to use the tool, explain briefly and "
+    "concretely using the capabilities below.\n"
+    "- If the message looks like a question about drawing content, say plainly "
+    "that you couldn't find it in the ingested drawings, and suggest checking "
+    "that the document is uploaded and confirmed (Documents page), or asking "
+    "with the drawing number.\n"
+    "- Never invent drawing content. Keep it short and friendly.\n\n"
+    "What BlueprintAI can do:\n"
+    "- Upload drawings (DXF, DWG, PDF, PNG, JPG, TIFF - or a ZIP of many); the "
+    "AI reads each drawing, extracts every text region, and writes a short "
+    "description of what it depicts.\n"
+    "- Review before ingest: every extracted region is verified by a human on "
+    "the Documents page (correct or reject, then Confirm & ingest).\n"
+    "- Organize: projects, drawing sets, versions of the same drawing, and a "
+    "Files page with folders. Uploads are auto-assigned to drawings when the "
+    "file name or content identifies them.\n"
+    "- Ask questions in this chat: answers cite the exact source regions, "
+    "highlight them on the drawing, handle multiple drawings and versions, and "
+    "can be scoped to one project with the selector on the left.\n"
+    "- Rate answers with the thumbs - feedback improves future retrieval."
+)
 
 
 REGISTRY_POOL = 10
@@ -339,8 +370,11 @@ class QueryService:
         if top_meta >= MIN_RELEVANCE and top_meta >= top_score + REGISTRY_MARGIN:
             return self._registry_answer(convo_prefix + question, meta_hits)
         if top_score < MIN_RELEVANCE:
-            return {"answer": NO_MATCH, "prompt": None, "evidence": [],
-                    "version_context": None, "multi_drawing": False}
+            # off-corpus: greet / explain the tool / honest not-found - see
+            # ASSISTANT_PROMPT. Generated (so it streams), never cited.
+            return {"answer": None,
+                    "prompt": (ASSISTANT_PROMPT, f"{convo_prefix}User message: {question}"),
+                    "evidence": [], "version_context": None, "multi_drawing": False}
 
         # Registry cards that are relevant but did not win outright still know
         # things the file content cannot (full drawing lists, version links,

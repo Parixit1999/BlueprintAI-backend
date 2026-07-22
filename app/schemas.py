@@ -22,6 +22,7 @@ class VerificationStatus(str, Enum):
 
 
 class RegionType(str, Enum):
+    summary = "summary"  # whole-drawing description written by the vision model
     title_block = "title_block"
     dimension = "dimension"
     note = "note"

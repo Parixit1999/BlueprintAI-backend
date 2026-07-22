@@ -35,6 +35,20 @@ class RenderService:
             "extents": entry["extents"],
         }
 
+    def get_render_bytes(self, file_id: str, page: int = 1) -> bytes:
+        """The rendered page as PNG bytes - used to let the answer model SEE
+        the drawing it is describing (visual answers)."""
+        record = self._files.get(file_id)
+        if record is None:
+            raise FileNotFound("File not found")
+        pages = self._page_map(record)
+        entry = pages.get(str(page))
+        if entry is None:
+            entry = self._generate(record, page)
+            pages[str(page)] = entry
+            self._files.set_render(file_id, {"pages": pages})
+        return self._storage.download_bytes(entry["s3_key"])
+
     @staticmethod
     def _page_map(record: dict) -> dict:
         render = record["render"] or {}

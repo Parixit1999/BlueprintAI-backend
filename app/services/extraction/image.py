@@ -36,8 +36,14 @@ Find EVERY piece of visible text in the image - title block fields, drawing
 numbers, dimensions, notes, labels. Each one is its own region; do not merge
 or skip any.
 
-Return ONLY a JSON object of the form {"regions": [...]} where each element of
-"regions" describes one text region:
+Return ONLY a JSON object of the form {"summary": "...", "regions": [...]}.
+
+"summary" is one rich paragraph describing what the drawing DEPICTS as an
+engineer would: what kind of drawing it is, what is shown (equipment,
+structures, plans, sections), the overall layout, and anything notable.
+Mention the drawing number and title if visible. Do not guess at values.
+
+Each element of "regions" describes one text region:
 {
   "text": "the exact text, or null if illegible - NEVER guess",
   "type": "note" | "dimension" | "title_block" | "bom",
@@ -58,6 +64,19 @@ _REGION_MAP = {
     "title_block": RegionType.title_block,
     "bom": RegionType.bom,
 }
+
+
+def _parse_summary(raw: str) -> str | None:
+    """The whole-drawing description from the {"summary": ...} contract."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", raw)
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    summary = obj.get("summary") if isinstance(obj, dict) else None
+    return summary.strip() if isinstance(summary, str) and summary.strip() else None
 
 
 def _parse_response(raw: str) -> list[dict]:
@@ -172,6 +191,16 @@ class ImageExtractor:
         prompt = PROMPT.replace("{width}", str(sent_w)).replace("{height}", str(sent_h))
         raw = self._vision.analyze_image(sent_bytes, prompt)
         regions: list[VisionRegion] = []
+        summary = _parse_summary(raw)
+        if summary:
+            regions.append(
+                VisionRegion(
+                    region_type=RegionType.summary,
+                    text=summary,
+                    confidence=Confidence.high,
+                    bbox_pct=None,  # describes the whole drawing
+                )
+            )
         for item in _parse_response(raw):
             if not isinstance(item, dict):
                 continue

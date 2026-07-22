@@ -3,18 +3,27 @@
 
 MODELS = llama3.2-vision:11b llama3.1:8b snowflake-arctic-embed:335m
 
-.PHONY: up down build logs status models health clean
+# Local-storage mode layers the MinIO override on top of the base file.
+LOCAL = -f docker-compose.yml -f docker-compose.local.yml
 
-up: ## build and start the whole stack (db, minio, backend, frontend)
-	docker compose up -d --build
-	@echo "\nBlueprintAI is starting:"
+.PHONY: up up-local down build logs status models health clean
+
+up: ## build and start the stack against real S3 (default, needs aws login)
+	docker compose up -d --build --remove-orphans
+	@echo "\nBlueprintAI is starting (cloud storage - real S3):"
+	@echo "  app:      http://localhost:5175"
+	@echo "  api:      http://localhost:8000/docs"
+	@echo "\nOffline/local storage instead?  make up-local"
+
+up-local: ## build and start the stack against local MinIO storage
+	docker compose $(LOCAL) up -d --build
+	@echo "\nBlueprintAI is starting (local storage - MinIO):"
 	@echo "  app:      http://localhost:5175"
 	@echo "  api:      http://localhost:8000/docs"
 	@echo "  minio:    http://localhost:9001 (minioadmin/minioadmin)"
-	@echo "\nFirst run? Pull the AI models once:  make models"
 
-down: ## stop the stack (data volumes are kept)
-	docker compose down
+down: ## stop the stack, either mode (data volumes are kept)
+	docker compose $(LOCAL) down
 
 build: ## rebuild images without starting
 	docker compose build
@@ -34,5 +43,5 @@ health: ## quick end-to-end health probe
 	@curl -sf http://localhost:5175 >/dev/null && echo "frontend OK" || echo "frontend DOWN"
 	@curl -sf http://localhost:11434/api/tags >/dev/null && echo "ollama   OK" || echo "ollama   DOWN (brew services start ollama)"
 
-clean: ## stop and DELETE ALL DATA (db + storage volumes)
-	docker compose down -v
+clean: ## stop and DELETE ALL LOCAL DATA (db + MinIO volumes; real S3 untouched)
+	docker compose $(LOCAL) down -v

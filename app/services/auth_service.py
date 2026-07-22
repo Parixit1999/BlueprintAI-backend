@@ -21,7 +21,14 @@ _FAILED_LOGIN_DELAY_S = 0.5
 
 
 class AuthFailed(BlueprintError):
-    """Wrong credentials or missing/expired token."""
+    """Wrong credentials or missing/expired token (mapped to 401)."""
+
+
+class PasswordChangeRejected(BlueprintError):
+    """Password change validation failure. Deliberately NOT AuthFailed:
+    the frontend treats 401 as an expired session and signs the user out,
+    which must not happen on a wrong current password or a too-short new
+    one. Falls through to the default 400."""
 
 
 class AuthService:
@@ -57,9 +64,11 @@ class AuthService:
         user = self._repo.get_user_by_id(user_id)
         if user is None or not bcrypt.checkpw(current.encode(), user["password_hash"].encode()):
             time.sleep(_FAILED_LOGIN_DELAY_S)
-            raise AuthFailed("Current password is incorrect.")
+            raise PasswordChangeRejected("Current password is incorrect.")
         if len(new) < 8:
-            raise AuthFailed("New password must be at least 8 characters.")
+            raise PasswordChangeRejected(
+                "New password must be at least 8 characters long."
+            )
         self._repo.set_password_hash(
             user_id, bcrypt.hashpw(new.encode(), bcrypt.gensalt()).decode()
         )

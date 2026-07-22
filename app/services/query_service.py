@@ -101,6 +101,20 @@ REGISTRY_POOL = 10
 REGISTRY_MARGIN = 0.12
 
 
+# Follow-up questions lose their meaning when searched literally ("how many
+# drawings does IT have?") - the pronoun matches nothing, and generic words
+# can hit the wrong document. Before retrieval, follow-ups are rewritten into
+# a standalone query using the conversation, so the search targets what the
+# user actually meant. The original wording still goes to the generator.
+REWRITE_PROMPT = (
+    "You turn a follow-up chat message into ONE standalone search query about "
+    "engineering drawings. Resolve references like 'it', 'this document', "
+    "'each one' from the conversation. Keep drawing numbers and file names "
+    "verbatim. If the message is already self-contained, return it unchanged. "
+    "Return ONLY the query text - no quotes, no explanation."
+)
+
+
 class QueryService:
     def __init__(
         self,
@@ -318,6 +332,21 @@ class QueryService:
         except Exception:
             return None
 
+    def _contextualize(self, question: str, history: list[dict]) -> str:
+        """Standalone search query for a follow-up. Best-effort: any failure
+        or degenerate rewrite falls back to the original question."""
+        try:
+            convo = self._conversation_block(history)
+            rewritten = self._generator.generate(
+                REWRITE_PROMPT,
+                f"Conversation so far:\n{convo}\n\nLatest message: {question}",
+            ).strip().strip('"')
+            if 0 < len(rewritten) <= 400:
+                return rewritten
+        except Exception:
+            pass
+        return question
+
     def plan(
         self,
         question: str,
@@ -333,7 +362,8 @@ class QueryService:
         generate from - which is what makes evidence-first streaming possible.
         `history` (recent session turns) lets follow-up questions keep their
         conversation context."""
-        q_embedding = self._embedder.embed(question)
+        search_question = self._contextualize(question, history) if history else question
+        q_embedding = self._embedder.embed(search_question)
         candidates = self._chunks.search(q_embedding, CANDIDATE_POOL, project_id)
         meta_hits = (
             self._registry.search(q_embedding, REGISTRY_POOL, project_id)
@@ -383,7 +413,7 @@ class QueryService:
         # versions" phrasings get complete answers.
         registry_extra = [h for h in meta_hits if h["score"] >= MIN_RELEVANCE]
         registry_extra = (
-            self._anchored_cards(question, registry_extra) + registry_extra
+            self._anchored_cards(search_question, registry_extra) + registry_extra
         )[:3]
 
         # Group candidates by the drawing (or file, when unassigned) they belong

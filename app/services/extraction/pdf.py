@@ -10,9 +10,11 @@ viewer mapping works for every file type.
 """
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 import pymupdf
 
+from app.config import settings
 from app.exceptions import ExtractionFailed, InvalidFile
 from app.schemas import Confidence, ProvisionalChunk, RegionType
 from app.services.extraction.enhance import enhance_for_vision
@@ -149,20 +151,26 @@ class PdfExtractor:
         return chunks
 
     def _extract_scanned(self, doc: "pymupdf.Document") -> list[ProvisionalChunk]:
-        chunks: list[ProvisionalChunk] = []
+        # Rasterize serially (PyMuPDF documents are not thread-safe), then run
+        # the slow part - vision + OCR per page - concurrently. Results keep
+        # page order regardless of completion order.
+        pages: list[tuple[int, bytes, float, float]] = []
         for page_index, page in enumerate(doc):
             png = page.get_pixmap(dpi=self.SCAN_DPI).tobytes("png")
             png, _applied = enhance_for_vision(png)
-            regions = self._image.analyze(png)
+            pages.append((page_index, png, page.rect.width, page.rect.height))
+
+        with ThreadPoolExecutor(max_workers=settings.vision_page_concurrency) as pool:
+            page_regions = list(pool.map(lambda p: self._image.analyze(p[1]), pages))
+
+        chunks: list[ProvisionalChunk] = []
+        for (page_index, _png, width, height), regions in zip(pages, page_regions):
             # Map vision percentages into PDF-point extents, matching the viewer's
             # render_pdf_page extents [0, 0, page.width, page.height].
             for region in regions:
                 chunks.append(
                     ImageExtractor.region_to_chunk(
-                        region,
-                        page.rect.width,
-                        page.rect.height,
-                        page=page_index + 1,
+                        region, width, height, page=page_index + 1
                     )
                 )
         return chunks

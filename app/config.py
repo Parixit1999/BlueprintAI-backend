@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     bedrock_text_model: str = "us.anthropic.claude-opus-4-8"
     bedrock_embed_model: str = "amazon.titan-embed-text-v2:0"
 
+    # Pipeline concurrency. Embedding calls are small and fast - 8 parallel
+    # Titan calls stay well under Bedrock quotas and cut dense-sheet ingest
+    # ~8x. Vision calls are heavy (32K-token responses) - 2 parallel pages
+    # roughly halves multi-page extraction without tripping throttles.
+    embed_concurrency: int = 8
+    vision_page_concurrency: int = 2
+
     # Hybrid OCR: Amazon Textract reads text at full resolution with
     # pixel-accurate boxes; the vision model uses it as a reference and its
     # boxes snap to matching lines. Best-effort - missing permission or

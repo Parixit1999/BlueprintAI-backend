@@ -74,6 +74,16 @@ def _ensure_auth_schema() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS auth_tokens_user_idx ON auth_tokens (user_id)"
         )
+        # human veto over embedding-similarity duplicate flags: pairs the
+        # user has marked "not a duplicate" (stored in both directions)
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS dismissed_duplicates (
+                   file_id       uuid NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                   other_file_id uuid NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                   created_at    timestamptz NOT NULL DEFAULT now(),
+                   PRIMARY KEY (file_id, other_file_id)
+               )"""
+        )
 
 
 def _seed_first_user() -> None:

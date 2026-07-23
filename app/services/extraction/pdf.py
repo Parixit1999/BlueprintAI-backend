@@ -173,4 +173,43 @@ class PdfExtractor:
                         region, width, height, page=page_index + 1
                     )
                 )
+        overview = self._document_overview(chunks)
+        if overview is not None:
+            chunks.insert(0, overview)
         return chunks
+
+    _OVERVIEW_PROMPT = (
+        "You are summarizing a multi-sheet engineering drawing document. Below "
+        "are AI-written summaries of each sheet. Write ONE cohesive paragraph "
+        "describing the document as a whole: what it is, what the sheets "
+        "collectively cover, and the key identifying facts (drawing numbers, "
+        "project, dates) that repeat across sheets. Plain text only, no preamble."
+    )
+
+    def _document_overview(self, chunks: list[ProvisionalChunk]) -> ProvisionalChunk | None:
+        """One document-level summary synthesized from the per-sheet summaries.
+
+        Multi-sheet PDFs otherwise have only per-page summaries, so nothing
+        describes the document as a whole - the thing a reader (and registry
+        retrieval) most wants. Best-effort: extraction never fails over it."""
+        sheet_summaries = [
+            (c.page, c.chunk_text)
+            for c in chunks
+            if c.region_type == RegionType.summary and c.chunk_text
+        ]
+        if self._generator is None or len(sheet_summaries) < 2:
+            return None
+        listing = "\n\n".join(f"Sheet {p}: {t}" for p, t in sheet_summaries)
+        try:
+            text = self._generator.generate(self._OVERVIEW_PROMPT, listing).strip()
+        except Exception:
+            return None
+        if not text:
+            return None
+        return ProvisionalChunk(
+            region_type=RegionType.summary,
+            chunk_text=f"Document overview ({len(sheet_summaries)} sheets): {text}",
+            bbox=None,
+            confidence=Confidence.high,
+            page=1,
+        )

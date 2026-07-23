@@ -153,6 +153,8 @@ class FileService:
             return None
         return {"file_id": file_id, "status": record["status"],
                 "filename": record["filename"], "is_drawing": record.get("is_drawing"),
+                "dwg_number": record.get("dwg_number"),
+                "project_name": record.get("project_name"),
                 "chunks": record["extraction"]}
 
     def delete_file(self, file_id: str) -> None:

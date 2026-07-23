@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     bedrock_text_model: str = "us.anthropic.claude-opus-4-8"
     bedrock_embed_model: str = "amazon.titan-embed-text-v2:0"
 
+    # Hybrid OCR: Amazon Textract reads text at full resolution with
+    # pixel-accurate boxes; the vision model uses it as a reference and its
+    # boxes snap to matching lines. Best-effort - missing permission or
+    # offline development silently falls back to vision-only.
+    textract_enabled: bool = True
+
     # "ollama" (local) or "bedrock" (AWS) — controls embeddings + generation
     ai_provider: str = "ollama"
     ollama_base_url: str = "http://localhost:11434"

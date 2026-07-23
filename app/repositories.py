@@ -103,8 +103,11 @@ class FileRepository:
     def get(self, file_id: str) -> dict[str, Any] | None:
         with self._pool.connection() as conn:
             row = conn.execute(
-                "SELECT id, filename, file_type, status, extraction, created_at, s3_key, render, "
-                "content_sha256, error, drawing_id, is_drawing FROM files WHERE id = %s",
+                "SELECT f.id, f.filename, f.file_type, f.status, f.extraction, f.created_at, "
+                "f.s3_key, f.render, f.content_sha256, f.error, f.drawing_id, f.is_drawing, "
+                "d.dwg_number, p.name "
+                "FROM files f LEFT JOIN drawings d ON f.drawing_id = d.id "
+                "LEFT JOIN projects p ON d.project_id = p.id WHERE f.id = %s",
                 (file_id,),
             ).fetchone()
         if row is None:
@@ -122,6 +125,8 @@ class FileRepository:
             "error": row[9],
             "drawing_id": str(row[10]) if row[10] else None,
             "is_drawing": row[11],
+            "dwg_number": row[12],
+            "project_name": row[13],
         }
 
     def list_render_keys(self, file_id: str) -> list[str]:

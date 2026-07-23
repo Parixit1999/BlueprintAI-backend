@@ -18,11 +18,13 @@ class FileService:
         storage: ObjectStorage,
         embedder: EmbeddingProvider,
         index=None,  # RegistryIndexService; optional to keep tests/tools light
+        drawings=None,  # DrawingRepository; optional, enables orphan cleanup
     ):
         self._files = files
         self._storage = storage
         self._embedder = embedder
         self._index = index
+        self._drawings = drawings
 
     def _document_embedding(self, chunks: list[dict]) -> list[float] | None:
         """One embedding representing the whole document, for semantic
@@ -165,6 +167,14 @@ class FileService:
             except Exception:
                 pass
         self._files.delete(file_id)
+        # Drawing records auto-created by an upload should not outlive their
+        # last file - otherwise projects count ghost drawings. Human work is
+        # protected: manually created drawings, any hand-entered metadata
+        # (description, contract number, version note), or explicit version
+        # links keep the record even with zero files.
+        if self._drawings and record.get("drawing_id"):
+            if self._cleanup_orphan_drawing(record["drawing_id"]):
+                return
         # the parent drawing's registry card lists its files - refresh it so
         # registry answers stop mentioning the deleted document (best-effort:
         # a stale card must never block the delete)
@@ -173,3 +183,30 @@ class FileService:
                 self._index.index_drawing(record["drawing_id"])
             except Exception:
                 pass
+
+    def _cleanup_orphan_drawing(self, drawing_id: str) -> bool:
+        """Delete a drawing left empty by a file deletion, but ONLY when it is
+        a bare upload-created shell. Returns True when the drawing was removed
+        (registry card included). Best-effort: cleanup must never fail the
+        file deletion that triggered it."""
+        try:
+            drawing = self._drawings.get(drawing_id)
+            if drawing is None:
+                return False
+            protected = (
+                drawing.get("source") != "upload"
+                or drawing.get("description")
+                or drawing.get("contract_number")
+                or drawing.get("version_note")
+                or self._drawings.version_sibling_count(drawing_id) > 0
+            )
+            if protected or self._drawings.files_count(drawing_id) > 0:
+                return False
+            self._drawings.delete(drawing_id)
+            if self._index:
+                self._index.remove("drawing", drawing_id)
+                if drawing.get("project_id"):
+                    self._index.index_project(drawing["project_id"])
+            return True
+        except Exception:
+            return False

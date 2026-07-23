@@ -3,7 +3,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 
+from pydantic import BaseModel
+
+from app.db import pool
 from app.dependencies import drawing_service, file_service, render_service
+from app.repositories import DismissedDuplicateRepository
 from app.services.file_service import FileService
 from app.services.project_service import DrawingService
 from app.services.render_service import RenderService
@@ -73,6 +77,18 @@ def reextract(file_id: str, service: Service):
     after model upgrades). Drops its knowledge-base chunks and returns it to
     'needs review'. Sync def: blocking work runs in the worker threadpool."""
     return service.reextract(file_id)
+
+
+class NotDuplicateRequest(BaseModel):
+    other_file_id: str
+
+
+@router.post("/{file_id}/not-duplicate", status_code=204)
+def dismiss_duplicate(file_id: str, body: NotDuplicateRequest, service: Service):
+    """Human veto: this pair is not a duplicate - the flag never returns."""
+    if service.get_extraction(file_id) is None:
+        raise HTTPException(404, "Document not found")
+    DismissedDuplicateRepository(pool).dismiss(file_id, body.other_file_id)
 
 
 @router.delete("/{file_id}", status_code=204)

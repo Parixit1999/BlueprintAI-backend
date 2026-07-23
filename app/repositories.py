@@ -169,6 +169,10 @@ class FileRepository:
                             FROM files o
                             WHERE o.id <> f.id AND o.embedding IS NOT NULL
                               AND (1 - (f.embedding <=> o.embedding)) >= %s
+                              AND NOT EXISTS (
+                                SELECT 1 FROM dismissed_duplicates dd
+                                WHERE dd.file_id = f.id AND dd.other_file_id = o.id
+                              )
                           ) AS similar
                    FROM files f
                         LEFT JOIN chunks c ON c.source_file_id = f.id
@@ -1121,3 +1125,19 @@ class AuthRepository:
                     "DELETE FROM auth_tokens WHERE user_id = %s AND token_sha256 <> %s",
                     (user_id, except_sha),
                 )
+
+
+class DismissedDuplicateRepository:
+    """Pairs the user has ruled out as duplicates - symmetric, so both
+    directions are stored and either file's listing suppresses the other."""
+
+    def __init__(self, pool):
+        self._pool = pool
+
+    def dismiss(self, file_id: str, other_file_id: str) -> None:
+        with self._pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO dismissed_duplicates (file_id, other_file_id) "
+                "VALUES (%s, %s), (%s, %s) ON CONFLICT DO NOTHING",
+                (file_id, other_file_id, other_file_id, file_id),
+            )

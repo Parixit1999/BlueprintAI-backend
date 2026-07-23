@@ -1,4 +1,7 @@
 """HITL checkpoint: apply human corrections, embed, and ingest confirmed chunks."""
+from concurrent.futures import ThreadPoolExecutor
+
+from app.config import settings
 from app.exceptions import AlreadyIngested, FileNotFound
 from app.repositories import ChunkRepository, FileRepository
 from app.services.ai.base import EmbeddingProvider
@@ -27,7 +30,10 @@ class ReviewService:
             )
 
         try:
-            ingested = 0
+            # collect what actually gets ingested, then embed CONCURRENTLY -
+            # embedding is the slow step (one model call per region; dense
+            # sheets have hundreds), and the calls are independent
+            to_ingest = []
             for i, chunk in enumerate(record["extraction"]):
                 if i in rejected:
                     continue
@@ -38,6 +44,15 @@ class ReviewService:
                 text = corrected if corrected is not None else original
                 if not text:
                     continue  # unreadable value with no human correction - skip
+                to_ingest.append((chunk, original, corrected, text))
+
+            with ThreadPoolExecutor(max_workers=settings.embed_concurrency) as pool:
+                embeddings = list(
+                    pool.map(lambda item: self._embedder.embed(item[3]), to_ingest)
+                )
+
+            ingested = 0
+            for (chunk, original, corrected, text), embedding in zip(to_ingest, embeddings):
                 self._chunks.insert(
                     source_file_id=file_id,
                     region_type=chunk.get("region_type", "note"),
@@ -48,7 +63,7 @@ class ReviewService:
                     verification_status="corrected" if corrected is not None else "confirmed",
                     original_value=original,
                     corrected_value=corrected,
-                    embedding=self._embedder.embed(text),
+                    embedding=embedding,
                 )
                 ingested += 1
         except Exception:

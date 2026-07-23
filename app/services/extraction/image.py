@@ -13,6 +13,7 @@ from PIL import Image, UnidentifiedImageError
 from pillow_heif import register_heif_opener
 
 from app.exceptions import ExtractionFailed, InvalidFile
+from app.services.extraction.ocr import normalize_text, textract_lines
 
 # Teach Pillow to open iPhone HEIC/HEIF photos (idempotent)
 register_heif_opener()
@@ -65,7 +66,18 @@ measured from the TOP-LEFT corner. Draw the box TIGHTLY around the text it
 contains - it is used to highlight the exact region on the drawing.
 Use confidence "low" for anything small, blurry, or partially obscured. If a
 value is illegible, set text to null and confidence to "low". No prose
-outside the JSON object."""
+outside the JSON object.{ocr_section}"""
+
+# Appended to the prompt when Textract OCR lines are available. The OCR pass
+# reads the FULL-resolution image, so it sees small text the downscaled
+# vision image may not - transcribe against it rather than squinting.
+OCR_SECTION = """
+
+MACHINE OCR REFERENCE (read from the full-resolution image; use it to get
+exact characters and numbers right, especially small text; it has no
+understanding, so YOU still decide what is a region and what type it is;
+do not invent regions for OCR fragments that are not meaningful text):
+{ocr_lines}"""
 
 _REGION_MAP = {
     "note": RegionType.note,
@@ -197,20 +209,39 @@ class ImageExtractor:
                     return buf.getvalue(), img.width, img.height
                 img = img.resize((int(img.width * 0.85), int(img.height * 0.85)), Image.LANCZOS)
 
-    def analyze(self, data: bytes) -> list[VisionRegion]:
+    # OCR context cap: enough for a dense sheet without flooding the prompt
+    MAX_OCR_LINES = 250
+
+    def analyze(self, data: bytes, ocr_lines: list[dict] | None = None) -> list[VisionRegion]:
         """Run the vision model on raw image bytes and return regions with
         percentage bboxes. Coordinate-space-agnostic so both photo uploads and
         rasterized scanned-PDF pages can reuse it. Returns [] if nothing found;
-        callers decide whether an empty result is an error."""
+        callers decide whether an empty result is an error.
+
+        ocr_lines: precomputed Textract lines (tests / reuse); None fetches
+        them, [] skips OCR entirely."""
         try:
             with Image.open(io.BytesIO(data)) as img:
                 img.verify()
         except UnidentifiedImageError:
             raise InvalidFile("This file is not a valid image - it appears to be corrupt.")
 
+        if ocr_lines is None:
+            # full-resolution OCR pass; [] on any failure (graceful fallback)
+            ocr_lines = textract_lines(data)
+
         sent_bytes, sent_w, sent_h = self._downscale(data)
         # .replace, not .format - the prompt's JSON examples contain braces
         prompt = PROMPT.replace("{width}", str(sent_w)).replace("{height}", str(sent_h))
+        if ocr_lines:
+            listing = "\n".join(
+                f'- "{line["text"]}"' for line in ocr_lines[: self.MAX_OCR_LINES]
+            )
+            prompt = prompt.replace(
+                "{ocr_section}", OCR_SECTION.replace("{ocr_lines}", listing)
+            )
+        else:
+            prompt = prompt.replace("{ocr_section}", "")
         raw = self._vision.analyze_image(sent_bytes, prompt)
         regions: list[VisionRegion] = []
         summary = _parse_summary(raw)
@@ -245,7 +276,30 @@ class ImageExtractor:
                     bbox_pct=bbox_pct,
                 )
             )
+        if ocr_lines:
+            self._snap_to_ocr(regions, ocr_lines)
         return regions
+
+    @staticmethod
+    def _snap_to_ocr(regions: list[VisionRegion], ocr_lines: list[dict]) -> None:
+        """Replace approximate vision bboxes with Textract's pixel-accurate
+        ones when a region's text matches exactly one OCR line. A confirmed
+        character-for-character OCR match also upgrades confidence: the value
+        was machine-read at full resolution, not transcribed from a
+        downscaled image."""
+        by_text: dict[str, list[dict]] = {}
+        for line in ocr_lines:
+            by_text.setdefault(normalize_text(line["text"]), []).append(line)
+        for region in regions:
+            if not region.text:
+                continue
+            matches = by_text.get(normalize_text(region.text))
+            if not matches or len(matches) != 1:
+                continue  # absent or ambiguous (repeated text) - keep vision box
+            line = matches[0]
+            region.bbox_pct = list(line["bbox_pct"])
+            if line["confidence"] >= 90 and region.confidence != Confidence.high:
+                region.confidence = Confidence.high
 
     @staticmethod
     def region_to_chunk(

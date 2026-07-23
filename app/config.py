@@ -53,8 +53,11 @@ class Settings(BaseSettings):
 
     # Two documents whose embeddings are at least this cosine-similar are
     # flagged as possible duplicates. Calibrated on real drawings: the same
-    # drawing across formats scores ~0.98, genuinely different parts ~0.59.
-    duplicate_similarity_threshold: float = 0.90
+    # drawing across formats scores ~0.98, the same drawing extracted by
+    # DIFFERENT pipeline versions ~0.88, the closest genuinely-different
+    # pair (same drawing series) ~0.66. 0.85 catches cross-version copies
+    # with a wide margin above real neighbors.
+    duplicate_similarity_threshold: float = 0.85
 
     # Single-user mode for now; auth later just replaces this per-request.
     default_user_id: str = "global"

@@ -155,7 +155,7 @@ class FileRepository:
             rows = conn.execute(
                 """SELECT f.id, f.filename, f.file_type, f.status, f.created_at,
                           f.error, f.drawing_id, d.dwg_number, f.auto_assigned, count(c.id),
-                          f.is_drawing,
+                          f.is_drawing, p.name AS project_name,
                           (
                             SELECT json_agg(json_build_object(
                                      'file_id', o.id, 'filename', o.filename,
@@ -168,7 +168,8 @@ class FileRepository:
                    FROM files f
                         LEFT JOIN chunks c ON c.source_file_id = f.id
                         LEFT JOIN drawings d ON f.drawing_id = d.id
-                   GROUP BY f.id, d.dwg_number ORDER BY f.created_at DESC""",
+                        LEFT JOIN projects p ON d.project_id = p.id
+                   GROUP BY f.id, d.dwg_number, p.name ORDER BY f.created_at DESC""",
                 (similarity_threshold,),
             ).fetchall()
         return [
@@ -184,8 +185,9 @@ class FileRepository:
                 "auto_assigned": r[8],
                 "chunk_count": r[9],
                 "is_drawing": r[10],
-                "similar_documents": r[11] or [],
-                "is_duplicate": bool(r[11]),
+                "project_name": r[11],
+                "similar_documents": r[12] or [],
+                "is_duplicate": bool(r[12]),
             }
             for r in rows
         ]

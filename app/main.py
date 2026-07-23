@@ -119,7 +119,7 @@ async def blueprint_error_handler(request: Request, exc: BlueprintError):
 
 
 # Everything except signing in (and the health probe) requires a session.
-_PUBLIC_PATHS = {"/health", "/auth/login"}
+_PUBLIC_PATHS = {"/health", "/api/health", "/api/auth/login"}
 
 
 @app.middleware("http")
@@ -151,15 +151,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth.router)
-app.include_router(files.router)
-app.include_router(review.router)
-app.include_router(query.router)
-app.include_router(chats.router)
-app.include_router(stats.router)
-app.include_router(projects.router)
-app.include_router(drawings.router)
-app.include_router(folders.router)
+# Every API route lives under /api so page URLs (/files, /projects in the
+# SPA) can never collide with API paths of the same name behind one domain -
+# CloudFront routes /api/* to the backend and everything else to the site.
+_API_PREFIX = "/api"
+for _r in (auth, files, review, query, chats, stats, projects, drawings, folders):
+    app.include_router(_r.router, prefix=_API_PREFIX)
+
+
+@app.get("/api/health")
+async def api_health():
+    return {"status": "ok"}
 
 
 @app.get("/health")

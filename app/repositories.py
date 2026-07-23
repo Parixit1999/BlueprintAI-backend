@@ -433,6 +433,21 @@ class DrawingRepository:
         with self._pool.connection() as conn:
             conn.execute("DELETE FROM drawings WHERE id = %s", (drawing_id,))
 
+    def files_count(self, drawing_id: str) -> int:
+        with self._pool.connection() as conn:
+            return conn.execute(
+                "SELECT count(*) FROM files WHERE drawing_id = %s", (drawing_id,)
+            ).fetchone()[0]
+
+    def version_sibling_count(self, drawing_id: str) -> int:
+        """Other drawings explicitly linked as versions of this one."""
+        with self._pool.connection() as conn:
+            return conn.execute(
+                "SELECT count(*) FROM drawings WHERE version_group_id = "
+                "(SELECT version_group_id FROM drawings WHERE id = %s) AND id <> %s",
+                (drawing_id, drawing_id),
+            ).fetchone()[0]
+
     def list_for_project(self, project_id: str) -> list[dict[str, Any]]:
         with self._pool.connection() as conn:
             rows = conn.execute(

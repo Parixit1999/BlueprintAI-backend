@@ -313,6 +313,7 @@ class DrawingService:
             record = self._files.get(file_id)
             sheet = matching.parse_filename(record["filename"])["sheet_number"]
             self._drawings.attach_file(file_id, target["drawing_id"], sheet, auto=True)
+            self._backfill_year(target["drawing_id"], record)
             self._index.index_drawing(target["drawing_id"])  # file list appears on the card
             auto = {
                 "drawing_id": target["drawing_id"],
@@ -356,6 +357,29 @@ class DrawingService:
         self._index.index_drawing(created["drawing_id"])
         return self.get_detail(created["drawing_id"])
 
+    def _file_years(self, record: dict) -> set[int]:
+        """Year evidence for a file: filename + extracted title-block text."""
+        parsed = matching.parse_filename(record["filename"])
+        content = matching.parse_content(
+            [c.get("chunk_text") for c in (record.get("extraction") or []) if c.get("chunk_text")]
+        )
+        return set(parsed.get("years") or []) | set(content.get("years") or [])
+
+    def _backfill_year(self, drawing_id: str, record: dict) -> None:
+        """Self-populating registry: when a file attaches to a drawing that
+        has NO recorded year, inherit one from the file's own evidence
+        (title-block dates, filename). Never overwrites an existing year -
+        a conflict there is version evidence, not a correction."""
+        drawing = self._drawings.get(drawing_id)
+        if drawing is None or drawing.get("year"):
+            return
+        years = self._file_years(record)
+        if not years:
+            return
+        year = max(years)
+        self._drawings.update(drawing_id, {"year": year, "drawing_date": str(year)})
+        self._index.index_drawing(drawing_id)
+
     def assign_file(
         self,
         file_id: str,
@@ -375,6 +399,11 @@ class DrawingService:
                 parsed = matching.parse_filename(record["filename"])
                 if parsed["dwg_candidates"]:
                     fields["dwg_number"] = parsed["dwg_candidates"][0]["norm"]
+            if not fields.get("year"):
+                years = self._file_years(record)
+                if years:
+                    fields["year"] = max(years)
+                    fields.setdefault("drawing_date", str(max(years)))
             created = self.create({**fields, "source": "upload"})
             drawing_id = created["drawing_id"]
         if drawing_id is None:
@@ -385,6 +414,7 @@ class DrawingService:
         if sheet_number is None:
             sheet_number = matching.parse_filename(record["filename"])["sheet_number"]
         self._drawings.attach_file(file_id, drawing_id, sheet_number)
+        self._backfill_year(drawing_id, record)
         self._index.index_drawing(drawing_id)  # file list appears on the card
         return self.get_detail(drawing_id)
 

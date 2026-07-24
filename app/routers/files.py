@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 
 from pydantic import BaseModel
@@ -24,20 +24,21 @@ async def upload_file(
     file: UploadFile,
     service: Service,
     drawings: Drawings,
+    background: BackgroundTasks,
     folder_id: Annotated[str | None, Form()] = None,
 ):
-    """Upload a drawing (DXF, PDF, PNG, JPG), optionally into a folder; domain
-    errors map to HTTP via the app-level handler. After extraction, the matcher
-    suggests (and, on an exact unique DWG match, auto-assigns) the drawing."""
+    """Upload a drawing: the request only validates and stores the original
+    (seconds), then extraction + the assignment matcher run as a background
+    task. Proxies cut connections at ~60s and dense scans extract for
+    minutes, so the client POLLS the file status instead of waiting here."""
     data = await file.read()
-    # Extraction is slow and blocking (vision/LLM calls, DB writes). Run it in a
-    # worker thread so a single in-progress upload can't freeze the event loop
-    # and stall every other request (document list, chat, etc.).
-    result = await run_in_threadpool(
-        service.ingest_upload, file.filename or "unnamed", data, folder_id
+    stored = await run_in_threadpool(
+        service.store_upload, file.filename or "unnamed", data, folder_id
     )
-    match = await run_in_threadpool(drawings.suggest_and_maybe_assign, result["file_id"])
-    return {**result, **match}
+    background.add_task(
+        service.process_upload, stored["file_id"], drawings.suggest_and_maybe_assign
+    )
+    return stored
 
 
 # The handlers below do only synchronous, blocking work (DB queries, rendering),
@@ -63,20 +64,25 @@ def get_render(file_id: str, renderer: Renderer, page: Annotated[int, Query(ge=1
 
 
 @router.post("/{file_id}/retry")
-def retry_extraction(file_id: str, service: Service, drawings: Drawings):
-    """Re-run extraction on a failed upload from the stored original. Sync def:
-    extraction is blocking, so it runs in the worker threadpool."""
-    result = service.retry_extraction(file_id)
-    match = drawings.suggest_and_maybe_assign(file_id)
-    return {**result, **match}
+def retry_extraction(
+    file_id: str, service: Service, drawings: Drawings, background: BackgroundTasks
+):
+    """Re-run extraction on a failed upload, in the background; poll status."""
+    prepared = service.prepare_retry(file_id)
+    background.add_task(
+        service.process_upload, file_id, drawings.suggest_and_maybe_assign
+    )
+    return prepared
 
 
 @router.post("/{file_id}/reextract")
-def reextract(file_id: str, service: Service):
-    """Re-read an extracted/ingested document with the current pipeline (used
-    after model upgrades). Drops its knowledge-base chunks and returns it to
-    'needs review'. Sync def: blocking work runs in the worker threadpool."""
-    return service.reextract(file_id)
+def reextract(file_id: str, service: Service, background: BackgroundTasks):
+    """Re-read an extracted/ingested document with the current pipeline, in
+    the background. Drops its knowledge-base chunks now; the document shows
+    as processing until the fresh regions land - poll status."""
+    prepared = service.prepare_reextract(file_id)
+    background.add_task(service.process_upload, file_id, None)
+    return prepared
 
 
 class NotDuplicateRequest(BaseModel):

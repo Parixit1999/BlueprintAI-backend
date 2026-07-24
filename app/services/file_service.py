@@ -1,5 +1,7 @@
 """Upload orchestration: validate -> store original -> extract -> persist chunks."""
 import hashlib
+import logging
+import threading
 import tempfile
 from pathlib import Path
 
@@ -44,7 +46,18 @@ class FileService:
         clean = "".join(ch for ch in clean if ch.isprintable() and ch not in '\\/:*?"<>|')
         return clean[:200].strip() or "unnamed"
 
-    def ingest_upload(self, filename: str, data: bytes, folder_id: str | None = None) -> dict:
+    # Extraction concurrency cap: pages/files beyond this WAIT instead of
+    # competing for memory. Two heavy multi-page extractions already use
+    # 4 concurrent vision calls; a third joins the line. This is what turns
+    # "many simultaneous uploads" from an OOM risk into a short queue.
+    _extract_slots = threading.Semaphore(2)
+
+    def store_upload(self, filename: str, data: bytes, folder_id: str | None = None) -> dict:
+        """The FAST half of an upload: validate, persist the original to
+        object storage, create the record in status 'uploaded'. Returns in
+        seconds so the HTTP request is never at the mercy of extraction time
+        (proxies cut connections at 60s; a dense multi-sheet scan takes 12
+        minutes). Extraction happens in process_upload, in the background."""
         filename = self._sanitize_filename(filename)
         suffix = Path(filename).suffix.lower()
         extractor = extraction.get_extractor(suffix)
@@ -69,7 +82,51 @@ class FileService:
         file_id = self._files.create(filename, suffix.lstrip("."), content_sha256, folder_id)
         s3_key = f"originals/{file_id}/{filename}"
         self._storage.upload_bytes(data, s3_key)
-        return self._extract_and_store(file_id, filename, suffix, s3_key, data)
+        # persist the key NOW - the background task reads it from the record
+        self._files.set_s3_key(file_id, s3_key)
+        return {"file_id": file_id, "filename": filename, "status": "uploaded"}
+
+    def process_upload(self, file_id: str, run_matcher=None) -> None:
+        """The SLOW half: extract, store regions, and (for fresh uploads) run
+        the assignment matcher. Runs as a background task under the extraction
+        semaphore; all outcomes land in the DB for the frontend to poll -
+        errors are recorded on the file row, never raised to a caller."""
+        record = self._files.get(file_id)
+        if record is None:
+            return
+        s3_key = record["s3_key"]
+        try:
+            data = self._storage.download_bytes(s3_key)
+            with self._extract_slots:
+                self._extract_and_store(
+                    file_id, record["filename"],
+                    Path(record["filename"]).suffix.lower(), s3_key, data,
+                )
+            if run_matcher is not None:
+                run_matcher(file_id)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "background processing failed for file %s", file_id
+            )
+            # _extract_and_store already recorded the failure on the row;
+            # anything before/after it gets a generic record so the user can
+            # see and retry rather than staring at a stuck 'uploaded'
+            current = self._files.get(file_id)
+            if current is not None and current["status"] == "uploaded":
+                self._files.mark_failed(
+                    file_id, s3_key, "Processing failed unexpectedly - use Retry."
+                )
+
+    def ingest_upload(self, filename: str, data: bytes, folder_id: str | None = None) -> dict:
+        """Synchronous upload+extract, kept for scripts/tests - the API route
+        uses store_upload + background process_upload instead."""
+        stored = self.store_upload(filename, data, folder_id)
+        record = self._files.get(stored["file_id"])
+        return self._extract_and_store(
+            stored["file_id"], stored["filename"],
+            Path(stored["filename"]).suffix.lower(), record["s3_key"],
+            self._storage.download_bytes(record["s3_key"]),
+        )
 
     def _extract_and_store(
         self, file_id: str, filename: str, suffix: str, s3_key: str, data: bytes
@@ -102,9 +159,8 @@ class FileService:
         return {"file_id": file_id, "filename": filename, "chunks": chunks,
                 "is_drawing": is_drawing}
 
-    def retry_extraction(self, file_id: str) -> dict:
-        """Re-run extraction on the stored original of a failed (or stuck
-        'uploaded') document."""
+    def prepare_retry(self, file_id: str) -> dict:
+        """Validate and mark a failed upload for background re-processing."""
         record = self._files.get(file_id)
         if record is None:
             raise FileNotFound("Document not found")
@@ -112,12 +168,24 @@ class FileService:
             raise UnsupportedFileType(
                 "This document was already extracted - retry only applies to failed uploads."
             )
-        filename = record["filename"]
+        self._files.mark_uploaded(file_id)
+        return {"file_id": file_id, "filename": record["filename"], "status": "uploaded"}
+
+    def prepare_reextract(self, file_id: str) -> dict:
+        """Validate and mark an extracted/ingested document for background
+        re-extraction: knowledge-base chunks drop now (nothing enters twice),
+        the fresh regions arrive when the background pass finishes."""
+        record = self._files.get(file_id)
+        if record is None:
+            raise FileNotFound("Document not found")
         s3_key = record["s3_key"]
         if not s3_key or s3_key == "pending":
-            s3_key = f"originals/{file_id}/{filename}"
-        data = self._storage.download_bytes(s3_key)
-        return self._extract_and_store(file_id, filename, Path(filename).suffix.lower(), s3_key, data)
+            raise UnsupportedFileType(
+                "The original file is not available for this document."
+            )
+        self._files.release_ingest_claim(file_id)
+        self._files.mark_uploaded(file_id)
+        return {"file_id": file_id, "filename": record["filename"], "status": "uploaded"}
 
     def reextract(self, file_id: str) -> dict:
         """Re-read an already-extracted (or ingested) document with the current
@@ -155,6 +223,8 @@ class FileService:
                 "filename": record["filename"], "is_drawing": record.get("is_drawing"),
                 "dwg_number": record.get("dwg_number"),
                 "project_name": record.get("project_name"),
+                "auto_assigned": record.get("auto_assigned"),
+                "error": record.get("error"),
                 "chunks": record["extraction"]}
 
     def delete_file(self, file_id: str) -> None:

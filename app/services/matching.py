@@ -12,8 +12,18 @@ import re
 
 # "12158-W-59", "11767 W-59", "6118W", "6118-W" - seq number, W, optional facility code
 _DWG_RE = re.compile(r"(\d{3,5})\s*[-_ ]?\s*W\b\s*[-_ ]?\s*(\d{1,3})?", re.IGNORECASE)
-# "pj1234", "PJ-1234", "pj 1234", "proj1234"
-_PJ_RE = re.compile(r"\bp(?:ro)?j\s*[-_#]?\s*(\d{2,6})", re.IGNORECASE)
+# "pj1234", "PJ-1234", "pj 1234", "proj1234" - plus municipal alphanumeric
+# numbers like "pj490-W" / "pj490W" (digits with a short letter suffix; the
+# lookahead stops "pj1234-sheet" from swallowing "she" as a suffix)
+_PJ_RE = re.compile(
+    r"\bp(?:ro)?j\s*[-_#]?\s*(\d{2,6}(?:-?[A-Za-z]{1,3})?(?![A-Za-z]))", re.IGNORECASE
+)
+
+
+def _norm_number(value: str) -> str:
+    """Compare project numbers ignoring case and separators: '490-W' ==
+    '490w' == '490 W'."""
+    return re.sub(r"[^A-Z0-9]", "", value.upper())
 # "SHT 23", "sht. 6 of 31", "sheet 4"
 _SHEET_RE = re.compile(r"\bsh(?:ee)?t\.?\s*#?\s*(\d+)(?:\s*of\s*(\d+))?", re.IGNORECASE)
 
@@ -92,9 +102,10 @@ def suggest_projects(
     for p in projects:
         best: tuple[float, str] | None = None
 
-        if p.get("number") and p["number"] in parsed["project_numbers"]:
+        number_norm = _norm_number(p["number"]) if p.get("number") else None
+        if number_norm and number_norm in {_norm_number(n) for n in parsed["project_numbers"]}:
             best = (0.95, f"filename contains project number pj{p['number']}")
-        elif p.get("number") and p["number"] in content["project_numbers"]:
+        elif number_norm and number_norm in {_norm_number(n) for n in content["project_numbers"]}:
             best = (0.95, f"the drawing content contains project number {p['number']}")
 
         name_tokens = [t for t in _tokens(p["name"]) if not t.isdigit()]

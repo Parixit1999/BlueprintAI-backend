@@ -61,6 +61,20 @@ class FileRepository:
                  is_drawing, file_id),
             )
 
+    def set_s3_key(self, file_id: str, s3_key: str) -> None:
+        with self._pool.connection() as conn:
+            conn.execute(
+                "UPDATE files SET s3_key = %s WHERE id = %s", (s3_key, file_id)
+            )
+
+    def mark_uploaded(self, file_id: str) -> None:
+        """Back to 'processing' state for background re-extraction/retry."""
+        with self._pool.connection() as conn:
+            conn.execute(
+                "UPDATE files SET status = 'uploaded', error = NULL WHERE id = %s",
+                (file_id,),
+            )
+
     def mark_failed(self, file_id: str, s3_key: str, error: str) -> None:
         """Keep the row on extraction failure (instead of deleting) so the UI
         can show what went wrong and offer a retry without re-uploading."""
@@ -105,7 +119,7 @@ class FileRepository:
             row = conn.execute(
                 "SELECT f.id, f.filename, f.file_type, f.status, f.extraction, f.created_at, "
                 "f.s3_key, f.render, f.content_sha256, f.error, f.drawing_id, f.is_drawing, "
-                "d.dwg_number, p.name "
+                "d.dwg_number, p.name, f.auto_assigned "
                 "FROM files f LEFT JOIN drawings d ON f.drawing_id = d.id "
                 "LEFT JOIN projects p ON d.project_id = p.id WHERE f.id = %s",
                 (file_id,),
@@ -127,6 +141,7 @@ class FileRepository:
             "is_drawing": row[11],
             "dwg_number": row[12],
             "project_name": row[13],
+            "auto_assigned": row[14],
         }
 
     def list_render_keys(self, file_id: str) -> list[str]:

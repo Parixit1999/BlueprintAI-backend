@@ -49,6 +49,13 @@ def _recover_orphaned_ingests() -> None:
             conn.execute(
                 "UPDATE files SET status = 'extracted' WHERE id = %s", (file_id,)
             )
+        # background extractions die with the process too: anything still
+        # 'uploaded' at startup is stranded - surface it as retryable
+        conn.execute(
+            "UPDATE files SET status = 'failed', "
+            "error = 'Processing was interrupted by a restart - use Retry.' "
+            "WHERE status = 'uploaded'"
+        )
 
 
 def _ensure_auth_schema() -> None:

@@ -10,7 +10,9 @@ from app.config import settings
 
 class ObjectStorage(Protocol):
     def upload_bytes(self, data: bytes, key: str, content_type: str = ...) -> str: ...
+    def upload_fileobj(self, fileobj, key: str) -> str: ...
     def download_bytes(self, key: str) -> bytes: ...
+    def download_to_path(self, key: str, path: str) -> str: ...
     def delete_bytes(self, key: str) -> None: ...
     def presigned_url(self, key: str, expires: int = ...) -> str: ...
 
@@ -41,8 +43,20 @@ class S3ObjectStorage:
         self._client.put_object(Bucket=self._bucket, Key=key, Body=data, ContentType=content_type)
         return key
 
+    def upload_fileobj(self, fileobj, key: str) -> str:
+        """Stream a file-like object to S3 (multipart under the hood) - a
+        1 GB upload never materializes in this process's memory."""
+        self._client.upload_fileobj(fileobj, self._bucket, key)
+        return key
+
     def download_bytes(self, key: str) -> bytes:
         return self._client.get_object(Bucket=self._bucket, Key=key)["Body"].read()
+
+    def download_to_path(self, key: str, path: str) -> str:
+        """Stream an object to a local file - processing works from disk, so
+        memory stays flat regardless of file size."""
+        self._client.download_file(self._bucket, key, path)
+        return path
 
     def delete_bytes(self, key: str) -> None:
         self._client.delete_object(Bucket=self._bucket, Key=key)

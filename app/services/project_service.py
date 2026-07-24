@@ -287,6 +287,11 @@ class DrawingService:
         """Post-extraction hook: compute suggestions and auto-assign when the
         gate passes. Returns {auto_assignment, suggestions} for the upload UI."""
         suggestions = self.suggestions_for_file(file_id)
+        # scoped uploads arrive pre-assigned (user chose the drawing/project);
+        # the matcher must never override a human decision
+        record = self._files.get(file_id)
+        if record and record.get("drawing_id"):
+            return {"auto_assignment": None, "suggestions": suggestions}
         version_ids = {v["drawing_id"] for v in suggestions["version_suggestions"]}
         exact = [
             d for d in suggestions["drawing_suggestions"]

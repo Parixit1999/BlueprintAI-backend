@@ -43,6 +43,9 @@ class AssignFile(BaseModel):
     drawing_id: str | None = None
     sheet_number: str | None = None
     new_drawing: DrawingCreate | None = None
+    # create a sibling drawing linked as a new version of this drawing id,
+    # and attach the file to it (the version-suggestion accept path)
+    version_of: str | None = None
 
 
 # Sync def handlers: DB-only work runs in FastAPI's worker threadpool.
@@ -90,7 +93,10 @@ def file_suggestions(file_id: str, service: Service):
 
 @router.post("/files/{file_id}/assign")
 def assign_file(file_id: str, body: AssignFile, service: Service):
-    """Attach a file to an existing drawing, or create a new drawing and attach."""
+    """Attach a file to an existing drawing, create a new drawing and attach,
+    or accept a version suggestion (version_of)."""
+    if body.version_of:
+        return service.add_as_version(file_id, body.version_of)
     return service.assign_file(
         file_id,
         body.drawing_id,

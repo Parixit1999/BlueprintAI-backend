@@ -198,18 +198,71 @@ class DrawingService:
             c.get("chunk_text") for c in (record.get("extraction") or []) if c.get("chunk_text")
         ]
         parsed = matching.parse_filename(filename)
+        content = matching.parse_content(content_texts)
+        drawing_suggestions = matching.suggest_drawings(
+            filename, self._drawings.search_registry(), content_texts
+        )
         return {
             "file_id": file_id,
             "filename": filename,
             "parsed": parsed,
-            "content_signals": matching.parse_content(content_texts),
+            "content_signals": content,
             "project_suggestions": matching.suggest_projects(
                 filename, self._projects.list_all(), content_texts
             ),
-            "drawing_suggestions": matching.suggest_drawings(
-                filename, self._drawings.search_registry(), content_texts
+            "drawing_suggestions": drawing_suggestions,
+            "version_suggestions": self._version_suggestions(
+                file_id, drawing_suggestions, parsed, content
             ),
         }
+
+    # Same-drawing-content band: high enough to mean "this is the same
+    # drawing" (calibrated: cross-format copies ~0.98, cross-pipeline copies
+    # ~0.88, closest genuinely-different drawings ~0.66), low enough to catch
+    # revised iterations whose content drifted.
+    VERSION_SIMILARITY = 0.70
+
+    def _version_suggestions(
+        self, file_id: str, drawing_suggestions: list, parsed: dict, content: dict
+    ) -> list:
+        """AI + registry evidence that an upload is a DIFFERENT ITERATION of a
+        known drawing (not another sheet of it): the drawing number matches,
+        and either the file's year conflicts with the drawing's recorded year,
+        or the content embedding closely matches the drawing's existing file
+        while a year signal differs. Never fires when years agree."""
+        file_years = set(parsed.get("years") or []) | set(content.get("years") or [])
+        out = []
+        for s in drawing_suggestions:
+            if s["score"] < 0.9:  # only number-anchored matches qualify
+                continue
+            drawing = self._drawings.get(s["drawing_id"])
+            if drawing is None:
+                continue
+            known_year = drawing.get("year")
+            year_conflict = bool(known_year and file_years and known_year not in file_years)
+            similarity = self._files.similarity_to_drawing(file_id, s["drawing_id"])
+            if not year_conflict:
+                continue
+            new_year = max(file_years)
+            reason = (
+                f"same drawing number as {drawing.get('dwg_number')} but this file "
+                f"reads year {new_year} while the registry records {known_year}"
+            )
+            if similarity is not None and similarity >= self.VERSION_SIMILARITY:
+                reason += f"; content is {similarity:.0%} similar to its existing file"
+            out.append(
+                {
+                    "drawing_id": s["drawing_id"],
+                    "dwg_number": drawing.get("dwg_number"),
+                    "project_name": s.get("project_name"),
+                    "existing_year": known_year,
+                    "new_year": new_year,
+                    "similarity": similarity,
+                    "score": 0.95 if (similarity or 0) >= self.VERSION_SIMILARITY else 0.85,
+                    "reason": reason,
+                }
+            )
+        return out
 
     # Auto-assign gate: only an EXACT normalized DWG-number match (score 0.95,
     # from filename or content), and only when that number maps to exactly one
@@ -217,17 +270,45 @@ class DrawingService:
     # decision. Everything weaker stays a suggestion.
     AUTO_ASSIGN_SCORE = 0.95
 
+    # Auto-version gate: year conflict AND content similarity both present
+    # (score 0.95), exactly one candidate. Creating a linked sibling is safe
+    # in a way picking-between-versions is not: nothing existing is touched.
+    AUTO_VERSION_SCORE = 0.95
+
     def suggest_and_maybe_assign(self, file_id: str) -> dict:
         """Post-extraction hook: compute suggestions and auto-assign when the
         gate passes. Returns {auto_assignment, suggestions} for the upload UI."""
         suggestions = self.suggestions_for_file(file_id)
+        version_ids = {v["drawing_id"] for v in suggestions["version_suggestions"]}
         exact = [
             d for d in suggestions["drawing_suggestions"]
             if d["score"] >= self.AUTO_ASSIGN_SCORE
         ]
         exact_ids = {d["drawing_id"] for d in exact}
         auto = None
-        if len(exact_ids) == 1:
+
+        strong_versions = [
+            v for v in suggestions["version_suggestions"]
+            if v["score"] >= self.AUTO_VERSION_SCORE
+        ]
+        if len(strong_versions) == 1 and len(version_ids) == 1:
+            # unambiguous new iteration: create the sibling version and attach
+            v = strong_versions[0]
+            detail = self.add_as_version(file_id, v["drawing_id"])
+            auto = {
+                "drawing_id": detail["drawing_id"],
+                "dwg_number": detail.get("dwg_number"),
+                "project_name": v.get("project_name"),
+                "sheet_number": None,
+                "kind": "new_version",
+                "of_year": v["existing_year"],
+                "new_year": v["new_year"],
+                "reason": v["reason"],
+            }
+        elif len(exact_ids) == 1 and not version_ids:
+            # plain same-drawing attach - but never when version evidence
+            # exists: silently filing a 2022 revision under the 2015 record
+            # is exactly the mistake this feature prevents
             target = exact[0]
             record = self._files.get(file_id)
             sheet = matching.parse_filename(record["filename"])["sheet_number"]
@@ -238,9 +319,42 @@ class DrawingService:
                 "dwg_number": target["dwg_number"],
                 "project_name": target.get("project_name"),
                 "sheet_number": sheet,
+                "kind": "attached",
                 "reason": target["reason"],
             }
         return {"auto_assignment": auto, "suggestions": suggestions}
+
+    def add_as_version(self, file_id: str, version_of: str) -> dict:
+        """Create a sibling drawing for a new iteration of `version_of`, link
+        the two into one version group, and attach the file to the sibling."""
+        base = self._drawings.get(version_of)
+        if base is None:
+            raise FileNotFound("Drawing not found")
+        record = self._files.get(file_id)
+        if record is None:
+            raise FileNotFound("File not found")
+        parsed = matching.parse_filename(record["filename"])
+        content = matching.parse_content(
+            [c.get("chunk_text") for c in (record.get("extraction") or []) if c.get("chunk_text")]
+        )
+        years = set(parsed.get("years") or []) | set(content.get("years") or [])
+        new_year = max(years) if years else None
+        created = self.create(
+            {
+                "project_id": base.get("project_id"),
+                "set_id": base.get("set_id"),
+                "dwg_number": base.get("dwg_number"),
+                "dwg_number_norm": base.get("dwg_number_norm"),
+                "year": new_year,
+                "drawing_date": str(new_year) if new_year else None,
+                "version_note": "added automatically as a new iteration",
+                "source": "upload",
+            }
+        )
+        self.link_versions(created["drawing_id"], version_of)
+        self._drawings.attach_file(file_id, created["drawing_id"], parsed["sheet_number"], auto=True)
+        self._index.index_drawing(created["drawing_id"])
+        return self.get_detail(created["drawing_id"])
 
     def assign_file(
         self,

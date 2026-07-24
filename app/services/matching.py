@@ -26,6 +26,8 @@ def _norm_number(value: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", value.upper())
 # "SHT 23", "sht. 6 of 31", "sheet 4"
 _SHEET_RE = re.compile(r"\bsh(?:ee)?t\.?\s*#?\s*(\d+)(?:\s*of\s*(\d+))?", re.IGNORECASE)
+# 4-digit years, plausible archive range - version evidence
+_YEAR_RE = re.compile(r"\b(19[2-9]\d|20[0-4]\d)\b")
 
 _STOPWORDS = {"the", "of", "and", "for", "at", "to", "a", "in", "on", "project", "dwg", "drawing"}
 
@@ -37,7 +39,11 @@ def normalize_dwg(seq: str, facility: str | None) -> str:
 def parse_filename(filename: str) -> dict:
     """Extract every recognizable signal from a filename."""
     stem = re.sub(r"\.[A-Za-z0-9]{1,4}$", "", filename)  # drop extension
-    out: dict = {"stem": stem, "dwg_candidates": [], "project_numbers": [], "sheet_number": None}
+    out: dict = {
+        "stem": stem, "dwg_candidates": [], "project_numbers": [],
+        "sheet_number": None, "years": [],
+    }
+    out["years"] = sorted({int(y) for y in _YEAR_RE.findall(stem)})
 
     for m in _DWG_RE.finditer(stem):
         seq, fac = m.group(1), m.group(2)
@@ -56,11 +62,13 @@ def parse_content(texts: list[str]) -> dict:
     """Extract DWG-number and project-number signals from a file's extracted
     region text (title blocks especially) - 'information found within the
     actual file content'. Essential for scans with meaningless filenames."""
-    out: dict = {"dwg_candidates": [], "project_numbers": []}
+    out: dict = {"dwg_candidates": [], "project_numbers": [], "years": []}
     seen_norms: set[str] = set()
+    years: set[int] = set()
     for text in texts[:200]:
         if not text:
             continue
+        years.update(int(y) for y in _YEAR_RE.findall(text))
         for m in _DWG_RE.finditer(text):
             seq, fac = m.group(1), m.group(2)
             norm = normalize_dwg(seq, fac)
@@ -72,6 +80,7 @@ def parse_content(texts: list[str]) -> dict:
         for m in _PJ_RE.finditer(text):
             if m.group(1) not in out["project_numbers"]:
                 out["project_numbers"].append(m.group(1))
+    out["years"] = sorted(years)
     return out
 
 

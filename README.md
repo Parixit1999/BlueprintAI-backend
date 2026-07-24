@@ -41,19 +41,35 @@ make up          # builds and starts db + backend + frontend
 ```
 
 - App: http://localhost:5175 · API: http://localhost:8000/api (docs at /docs)
-- **First run:** an `admin` account is created with a random password printed once
-  in the backend logs — `docker logs blueprintai-backend | grep password` — sign
-  in and change it (account menu, bottom-left).
 
-### Offline / local-storage mode
+### Signing in — depends on who you are
+
+- **Project owner:** `make up` connects to the shared cloud registry — sign in
+  with your existing `admin` password.
+- **Teammate with access to the AWS account:** `make up` joins the same shared
+  registry; ask the owner for the credential (single-user pilot — per-user
+  accounts are on the roadmap).
+- **No access to the project's AWS account?** Use the fully offline mode below —
+  it is completely self-contained.
+
+The `admin` account is auto-created only when the database is EMPTY (fresh
+offline volume, or a brand-new cloud database): its random password prints once
+in the backend logs — `docker logs blueprintai-backend | grep password` — sign
+in and change it. Set `INITIAL_ADMIN_PASSWORD` in the environment to choose it
+deterministically instead.
+
+### Offline / local-storage mode (no AWS account needed for storage/db)
 
 ```bash
 make up-local    # MinIO object storage + local Postgres instead of S3/RDS
 ```
 
-AI stays on Bedrock (needs internet). For a fully offline AI, set
-`AI_PROVIDER=ollama` — note that switching embedding models requires
-re-ingesting the knowledge base. Details: `docs/LOCAL-INFRA.md`.
+Storage and database run locally (MinIO + Postgres); the first boot seeds a
+fresh `admin` whose password prints in the logs as above. AI still defaults to
+Bedrock (needs AWS credentials with Bedrock access) — for a zero-AWS setup, set
+`AI_PROVIDER=ollama` and pull local models once with `make models` (extraction
+quality is reduced; switching embedding models later requires re-ingesting).
+Details: `docs/LOCAL-INFRA.md`.
 
 ## Key configuration (docker-compose.yml / .env)
 

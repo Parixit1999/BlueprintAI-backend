@@ -48,6 +48,9 @@ class ProvisionalChunk(BaseModel):
     # accuracy may be affected") - shown as a banner in the UI, never
     # ingested into the knowledge base
     advisory: bool = False
+    # component regions: every further instance of the same component type
+    # (bbox holds the first). One card per type, all locations highlightable.
+    extra_bboxes: list[list[float]] | None = None
 
 
 class ExtractedField(BaseModel):

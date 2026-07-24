@@ -144,6 +144,20 @@ class FileRepository:
             keys.append(render["s3_key"])
         return keys
 
+    def similarity_to_drawing(self, file_id: str, drawing_id: str) -> float | None:
+        """Best cosine similarity between this file's document embedding and
+        any file already attached to the drawing. AI evidence for 'same
+        drawing, different iteration'. None when either side lacks embeddings."""
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT max(1 - (a.embedding <=> b.embedding)) "
+                "FROM files a, files b "
+                "WHERE a.id = %s AND b.drawing_id = %s AND b.id <> a.id "
+                "  AND a.embedding IS NOT NULL AND b.embedding IS NOT NULL",
+                (file_id, drawing_id),
+            ).fetchone()
+        return round(float(row[0]), 4) if row and row[0] is not None else None
+
     def set_render(self, file_id: str, render: dict[str, Any]) -> None:
         with self._pool.connection() as conn:
             conn.execute(

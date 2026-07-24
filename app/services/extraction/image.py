@@ -33,6 +33,8 @@ class VisionRegion:
     text: str | None
     confidence: Confidence
     bbox_pct: list[float] | None  # [x1, y1, x2, y2] as 0-100 percentages
+    # component groups: every further instance's bbox (first is bbox_pct)
+    extra_bboxes_pct: list[list[float]] | None = None
     is_drawing: bool | None = None  # summary region only: vision verdict
 
 PROMPT = """You are extracting content from an engineering drawing image.
@@ -41,6 +43,17 @@ The image is {width}x{height} pixels.
 Find EVERY piece of visible text in the image - title block fields, drawing
 numbers, dimensions, notes, labels. Each one is its own region; do not merge
 or skip any.
+
+ALSO identify the DRAWN COMPONENTS - physical elements depicted in the
+drawing itself, not text: stairs, pipes, valves, pumps, doors, walls, tanks,
+ducts, structural members, fixtures, major equipment (these are examples;
+label whatever the drawing actually depicts). Be EXHAUSTIVE but GROUPED:
+emit ONE region per component TYPE, with "text" a short engineer's label
+(e.g. "staircase, U-shaped", "gate valve", "door, single-swing") - never the
+bare word "component" - and put the bbox of EVERY instance of that type in
+"instances" (the first instance also goes in "bbox_pct"). Box instances
+TIGHTLY. Every recognizable drawn element belongs to some group; do not
+skip repeats - count them all via their boxes.
 
 Return ONLY a JSON object of the form
 {"is_drawing": true|false, "summary": "...", "regions": [...]}.
@@ -55,9 +68,10 @@ Mention the drawing number and title if visible. Do not guess at values.
 
 Each element of "regions" describes one text region:
 {
-  "text": "the exact text, or null if illegible - NEVER guess",
-  "type": "note" | "dimension" | "title_block" | "bom",
+  "text": "the exact text (for component: a short label), or null if illegible - NEVER guess",
+  "type": "note" | "dimension" | "title_block" | "bom" | "component",
   "bbox_pct": [x1, y1, x2, y2],
+  "instances": [[x1, y1, x2, y2], ...],   // component regions only: every instance
   "confidence": "high" | "medium" | "low"
 }
 
@@ -84,6 +98,7 @@ _REGION_MAP = {
     "dimension": RegionType.dimension,
     "title_block": RegionType.title_block,
     "bom": RegionType.bom,
+    "component": RegionType.component,
 }
 
 
@@ -262,18 +277,36 @@ class ImageExtractor:
             pct = item.get("bbox_pct")
             if isinstance(pct, list) and len(pct) == 4:
                 bbox_pct = self._to_pct(pct, sent_w, sent_h)
+            # component groups carry every instance; first doubles as bbox
+            extra: list[list[float]] = []
+            instances = item.get("instances")
+            if isinstance(instances, list):
+                for inst in instances:
+                    if isinstance(inst, list) and len(inst) == 4:
+                        converted = self._to_pct(inst, sent_w, sent_h)
+                        if converted:
+                            extra.append(converted)
+            if extra and bbox_pct is None:
+                bbox_pct = extra[0]
+            if bbox_pct in extra:
+                extra = [b for b in extra if b != bbox_pct]
             text = item.get("text")
+            n_instances = (1 if bbox_pct else 0) + len(extra)
+            label = str(text).strip() if text else None
+            if label and n_instances > 1:
+                label = f"{label} — {n_instances} instances"
             confidence = item.get("confidence")
             regions.append(
                 VisionRegion(
                     region_type=_REGION_MAP.get(item.get("type"), RegionType.note),
-                    text=str(text).strip() if text else None,
+                    text=label,
                     confidence=(
                         Confidence(confidence)
                         if confidence in {c.value for c in Confidence}
                         else Confidence.medium
                     ),
                     bbox_pct=bbox_pct,
+                    extra_bboxes_pct=extra or None,
                 )
             )
         if ocr_lines:
@@ -302,6 +335,17 @@ class ImageExtractor:
                 region.confidence = Confidence.high
 
     @staticmethod
+    def _pct_to_extents(pct: list[float], xmax: float, ymax: float) -> list[float]:
+        x1, y1, x2, y2 = pct
+        # percentages from top-left -> extents coords, y-up
+        return [
+            round(x1 / 100 * xmax, 1),
+            round(ymax - (y2 / 100 * ymax), 1),
+            round(x2 / 100 * xmax, 1),
+            round(ymax - (y1 / 100 * ymax), 1),
+        ]
+
+    @staticmethod
     def region_to_chunk(
         region: VisionRegion, xmax: float, ymax: float, page: int = 1
     ) -> ProvisionalChunk:
@@ -309,13 +353,12 @@ class ImageExtractor:
         renderer's y-up coordinate space (extents [0, 0, xmax, ymax])."""
         bbox = None
         if region.bbox_pct is not None:
-            x1, y1, x2, y2 = region.bbox_pct
-            # percentages from top-left -> extents coords, y-up
-            bbox = [
-                round(x1 / 100 * xmax, 1),
-                round(ymax - (y2 / 100 * ymax), 1),
-                round(x2 / 100 * xmax, 1),
-                round(ymax - (y1 / 100 * ymax), 1),
+            bbox = ImageExtractor._pct_to_extents(region.bbox_pct, xmax, ymax)
+        extra = None
+        if region.extra_bboxes_pct:
+            extra = [
+                ImageExtractor._pct_to_extents(b, xmax, ymax)
+                for b in region.extra_bboxes_pct
             ]
         return ProvisionalChunk(
             region_type=region.region_type,
@@ -324,6 +367,7 @@ class ImageExtractor:
             bbox=bbox,
             confidence=region.confidence,
             page=page,
+            extra_bboxes=extra,
         )
 
     def extract(self, path: str) -> list[ProvisionalChunk]:

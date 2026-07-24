@@ -31,9 +31,10 @@ async def upload_file(
     (seconds), then extraction + the assignment matcher run as a background
     task. Proxies cut connections at ~60s and dense scans extract for
     minutes, so the client POLLS the file status instead of waiting here."""
-    data = await file.read()
+    # hand the spooled temp file straight to the streaming store - the
+    # request body never materializes as one bytes object
     stored = await run_in_threadpool(
-        service.store_upload, file.filename or "unnamed", data, folder_id
+        service.store_upload, file.filename or "unnamed", file.file, folder_id
     )
     background.add_task(
         service.process_upload, stored["file_id"], drawings.suggest_and_maybe_assign

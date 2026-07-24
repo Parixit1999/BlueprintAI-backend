@@ -604,6 +604,30 @@ class DrawingRepository:
 
     # --- files on drawings ---
 
+    def files_for_project(self, project_id: str) -> list[dict[str, Any]]:
+        """Every file attached to any drawing of the project, one query -
+        feeds the project file explorer without N+1 per drawing."""
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """SELECT f.id, f.filename, f.file_type, f.status, f.sheet_number,
+                          f.created_at, f.drawing_id
+                   FROM files f JOIN drawings d ON f.drawing_id = d.id
+                   WHERE d.project_id = %s ORDER BY f.filename""",
+                (project_id,),
+            ).fetchall()
+        return [
+            {
+                "file_id": str(r[0]),
+                "filename": r[1],
+                "file_type": r[2],
+                "status": r[3],
+                "sheet_number": r[4],
+                "created_at": r[5].isoformat(),
+                "drawing_id": str(r[6]),
+            }
+            for r in rows
+        ]
+
     def files_for_drawing(self, drawing_id: str) -> list[dict[str, Any]]:
         with self._pool.connection() as conn:
             rows = conn.execute(

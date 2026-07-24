@@ -35,9 +35,17 @@ class ProjectService:
         project = self._projects.get(project_id)
         if project is None:
             raise FileNotFound("Project not found")
+        drawings = self._drawings.list_for_project(project_id)
+        # attach each drawing's files inline: the project page IS the file
+        # explorer, so the hierarchy arrives in one response
+        by_drawing: dict[str, list] = {}
+        for f in self._drawings.files_for_project(project_id):
+            by_drawing.setdefault(f["drawing_id"], []).append(f)
+        for d in drawings:
+            d["files"] = by_drawing.get(d["drawing_id"], [])
         return {
             **project,
-            "drawings": self._drawings.list_for_project(project_id),
+            "drawings": drawings,
             "sets": self._drawings.list_sets(project_id),
         }
 
@@ -279,6 +287,11 @@ class DrawingService:
         """Post-extraction hook: compute suggestions and auto-assign when the
         gate passes. Returns {auto_assignment, suggestions} for the upload UI."""
         suggestions = self.suggestions_for_file(file_id)
+        # scoped uploads arrive pre-assigned (user chose the drawing/project);
+        # the matcher must never override a human decision
+        record = self._files.get(file_id)
+        if record and record.get("drawing_id"):
+            return {"auto_assignment": None, "suggestions": suggestions}
         version_ids = {v["drawing_id"] for v in suggestions["version_suggestions"]}
         exact = [
             d for d in suggestions["drawing_suggestions"]

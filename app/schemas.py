@@ -28,6 +28,9 @@ class RegionType(str, Enum):
     note = "note"
     bom = "bom"
     view = "view"
+    # a drawn physical element (stair, pipe, valve, pump, door, equipment) -
+    # located visually by the vision model, not read as text
+    component = "component"
 
 
 class ProvisionalChunk(BaseModel):

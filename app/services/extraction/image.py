@@ -42,6 +42,17 @@ Find EVERY piece of visible text in the image - title block fields, drawing
 numbers, dimensions, notes, labels. Each one is its own region; do not merge
 or skip any.
 
+ALSO identify the significant DRAWN COMPONENTS - physical elements depicted
+in the drawing itself, not text: stairs, pipes, valves, pumps, doors, walls,
+tanks, ducts, structural members, major equipment. For each, emit a region of
+type "component" whose "text" is a short engineer's label naming the element
+and its notable attributes (e.g. "staircase, U-shaped", "48-inch steel water
+main", "gate valve") - never the bare word "component". Box each component
+TIGHTLY. Label only distinct,
+recognizable components - not every line; a drawing typically has a handful
+to a few dozen. If the same component type repeats identically (e.g. many
+identical doors), box a few representative instances rather than all.
+
 Return ONLY a JSON object of the form
 {"is_drawing": true|false, "summary": "...", "regions": [...]}.
 
@@ -55,8 +66,8 @@ Mention the drawing number and title if visible. Do not guess at values.
 
 Each element of "regions" describes one text region:
 {
-  "text": "the exact text, or null if illegible - NEVER guess",
-  "type": "note" | "dimension" | "title_block" | "bom",
+  "text": "the exact text (for component: a short label), or null if illegible - NEVER guess",
+  "type": "note" | "dimension" | "title_block" | "bom" | "component",
   "bbox_pct": [x1, y1, x2, y2],
   "confidence": "high" | "medium" | "low"
 }
@@ -84,6 +95,7 @@ _REGION_MAP = {
     "dimension": RegionType.dimension,
     "title_block": RegionType.title_block,
     "bom": RegionType.bom,
+    "component": RegionType.component,
 }
 
 

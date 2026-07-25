@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 from pydantic import BaseModel
 
 from app.dependencies import review_service
@@ -19,10 +19,15 @@ class ConfirmRequest(BaseModel):
 
 
 @router.post("/{file_id}/confirm")
-def confirm_and_ingest(file_id: str, body: ConfirmRequest, service: Service):
+def confirm_and_ingest(
+    file_id: str, body: ConfirmRequest, service: Service, background: BackgroundTasks
+):
     """Domain errors (not found / already ingested) map to HTTP via the app-level handler.
 
-    Sync def: embedding each confirmed chunk is blocking, so FastAPI runs this in
-    its worker threadpool rather than on the event loop.
+    Returns in milliseconds: the file is atomically claimed ('ingesting') and
+    the embedding work runs as a background task - a dense sheet takes minutes,
+    far beyond proxy timeouts. Clients poll the document status, same as uploads.
     """
-    return service.confirm_and_ingest(file_id, body.corrections, body.rejected)
+    result = service.start_ingest(file_id, body.corrections, body.rejected)
+    background.add_task(service.run_ingest, file_id, body.corrections, body.rejected)
+    return result

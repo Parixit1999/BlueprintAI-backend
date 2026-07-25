@@ -82,7 +82,29 @@ Details: `docs/LOCAL-INFRA.md`.
 | `S3_BUCKET` (+ optional `S3_ENDPOINT_URL`) | drawing storage; endpoint set = MinIO |
 | `AI_PROVIDER` | `bedrock` (default) or `ollama` |
 | `TEXTRACT_ENABLED` | hybrid OCR on/off (degrades gracefully without access) |
+| `RENDER_CDN` | production only: serve render images as stable `/renders/*` paths cached by CloudFront (off locally — no CDN in front, presigned URLs are used) |
 | `INITIAL_ADMIN_PASSWORD` | optional deterministic seed password |
+
+## Production operations
+
+The deployed service is built to stay fast and heal itself under load:
+
+- **Horizontal scaling** — 3 to 8 Fargate workers via target-tracking
+  auto-scaling (scale-out at 60% CPU within a minute); the ALB routes each
+  request to the least-busy worker.
+- **Self-healing jobs** — background workers heartbeat every 45s while
+  extracting/ingesting; a per-instance sweeper reclaims any job silent for
+  3 minutes (a dead worker never strands a document in "Processing").
+- **Fast drawings by construction** — every sheet is pre-rendered at
+  extraction time and served as a capped JPEG/PNG derivative through a
+  dedicated CloudFront cache behavior; no viewer request ever waits on
+  render generation.
+- **Indexed retrieval** — chat/search runs on pgvector HNSW indexes
+  (logarithmic, not linear, in archive size), and document listing is
+  paginated, filtered, and sorted in SQL.
+- **Async everywhere** — uploads, extraction, ingestion, and rendering all
+  run in background jobs; no HTTP request carries minutes of work, so proxy
+  timeouts cannot fake failures.
 
 ## Deploying to AWS
 

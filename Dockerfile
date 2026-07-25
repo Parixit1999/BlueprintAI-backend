@@ -36,7 +36,7 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then \
       curl -fsSL -o /tmp/oda.deb \
         'https://www.opendesign.com/guestfiles/get?filename=ODAFileConverter_QT6_lnxX64_8.3dll_27.1.deb' && \
       apt-get install -y --no-install-recommends /tmp/oda.deb \
-        xvfb libgl1 libglib2.0-0 libfontconfig1 libxkbcommon0 libdbus-1-3 \
+        xvfb xauth libgl1 libglib2.0-0 libfontconfig1 libxkbcommon0 libdbus-1-3 \
         libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
         libxcb-render-util0 libxcb-shape0 libxcb-xkb1 libxcb-cursor0 && \
       rm /tmp/oda.deb && rm -rf /var/lib/apt/lists/* && \

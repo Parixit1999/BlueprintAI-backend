@@ -240,6 +240,148 @@ class FileRepository:
         ]
 
 
+    _LIST_SORTS = {
+        "name": "f.filename",
+        "assignment": "d.dwg_number",
+        "type": "f.file_type",
+        "status": "f.status",
+        "uploaded": "f.created_at",
+    }
+
+    def list_paged(
+        self,
+        similarity_threshold: float = 0.90,
+        q: str | None = None,
+        file_type: str | None = None,
+        status: str | None = None,
+        assigned: str | None = None,
+        dup_only: bool = False,
+        sort: str = "uploaded",
+        direction: str = "desc",
+        page: int = 1,
+        page_size: int = 10,
+    ) -> dict[str, Any]:
+        """Server-side paged listing: filters, sorting, and LIMIT/OFFSET run
+        in SQL, so listing cost is bound by the page size, not the archive -
+        including the per-row duplicate check, which only runs for the page.
+        """
+        order_col = self._LIST_SORTS.get(sort, "f.created_at")
+        order_dir = "ASC" if direction == "asc" else "DESC"
+        # stable secondary key so pages never overlap
+        order_sql = f"{order_col} {order_dir} NULLS LAST, f.id"
+
+        where = ["TRUE"]
+        params: list[Any] = []
+        if q:
+            where.append("f.filename ILIKE %s")
+            params.append(f"%{q}%")
+        if file_type:
+            where.append("f.file_type = %s")
+            params.append(file_type)
+        if status == "processing":
+            where.append("f.status IN ('uploaded', 'ingesting')")
+        elif status:
+            where.append("f.status = %s")
+            params.append(status)
+        if assigned == "yes":
+            where.append("f.drawing_id IS NOT NULL")
+        elif assigned == "no":
+            where.append("f.drawing_id IS NULL")
+        dup_exists = (
+            """EXISTS (
+                 SELECT 1 FROM files o
+                 WHERE o.id <> f.id AND o.embedding IS NOT NULL
+                   AND (1 - (f.embedding <=> o.embedding)) >= %s
+                   AND NOT EXISTS (
+                     SELECT 1 FROM dismissed_duplicates dd
+                     WHERE dd.file_id = f.id AND dd.other_file_id = o.id
+                   )
+               )"""
+        )
+        if dup_only:
+            where.append(dup_exists)
+            params.append(similarity_threshold)
+        where_sql = " AND ".join(where)
+
+        page = max(1, page)
+        page_size = max(1, min(page_size, 100))
+        offset = (page - 1) * page_size
+
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                f"""SELECT f.id, f.filename, f.file_type, f.status, f.created_at,
+                          f.error, f.drawing_id, d.dwg_number, f.auto_assigned,
+                          (SELECT count(*) FROM chunks c WHERE c.source_file_id = f.id),
+                          f.is_drawing, p.name AS project_name,
+                          (
+                            SELECT json_agg(json_build_object(
+                                     'file_id', o.id, 'filename', o.filename,
+                                     'similarity', round((1 - (f.embedding <=> o.embedding))::numeric, 4))
+                                   ORDER BY f.embedding <=> o.embedding)
+                            FROM files o
+                            WHERE o.id <> f.id AND o.embedding IS NOT NULL
+                              AND (1 - (f.embedding <=> o.embedding)) >= %s
+                              AND NOT EXISTS (
+                                SELECT 1 FROM dismissed_duplicates dd
+                                WHERE dd.file_id = f.id AND dd.other_file_id = o.id
+                              )
+                          ) AS similar,
+                          count(*) OVER() AS total
+                   FROM files f
+                        LEFT JOIN drawings d ON f.drawing_id = d.id
+                        LEFT JOIN projects p ON d.project_id = p.id
+                   WHERE {where_sql}
+                   ORDER BY {order_sql}
+                   LIMIT %s OFFSET %s""",
+                (similarity_threshold, *params, page_size, offset),
+            ).fetchall()
+            # cheap whole-archive facts for the page chrome
+            grand_total, pending_review = conn.execute(
+                "SELECT count(*), count(*) FILTER (WHERE status = 'extracted') FROM files"
+            ).fetchone()
+            types = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT DISTINCT file_type FROM files ORDER BY file_type"
+                ).fetchall()
+            ]
+            duplicate_count = conn.execute(
+                f"SELECT count(*) FROM files f WHERE {dup_exists}",
+                (similarity_threshold,),
+            ).fetchone()[0]
+
+        total = rows[0][13] if rows else 0
+        items = [
+            {
+                "file_id": str(r[0]),
+                "filename": r[1],
+                "file_type": r[2],
+                "status": r[3],
+                "created_at": r[4].isoformat(),
+                "error": r[5],
+                "drawing_id": str(r[6]) if r[6] else None,
+                "dwg_number": r[7],
+                "auto_assigned": r[8],
+                "chunk_count": r[9],
+                "is_drawing": r[10],
+                "project_name": r[11],
+                "similar_documents": r[12] or [],
+                "is_duplicate": bool(r[12]),
+            }
+            for r in rows
+        ]
+        return {
+            "items": items,
+            "total": total,
+            "grand_total": grand_total,
+            "pending_review_count": pending_review,
+            "duplicate_count": duplicate_count,
+            "types": types,
+            "page": page,
+            "page_size": page_size,
+        }
+
+
 _PROJECT_COLS = "id, number, name, description, source, created_at"
 
 

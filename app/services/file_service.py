@@ -286,6 +286,11 @@ class FileService:
     def list_files(self) -> list[dict]:
         return self._files.list_all(settings.duplicate_similarity_threshold)
 
+    def list_files_paged(self, **kwargs) -> dict:
+        return self._files.list_paged(
+            settings.duplicate_similarity_threshold, **kwargs
+        )
+
     def get_extraction(self, file_id: str) -> dict | None:
         record = self._files.get(file_id)
         if record is None:

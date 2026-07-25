@@ -49,7 +49,14 @@ class Settings(BaseSettings):
     # DWG uploads get guidance to export DXF/PDF instead.
     oda_converter_path: str | None = None
 
-    max_upload_bytes: int = 25 * 1024 * 1024  # 25 MB
+    # Streamed to S3/disk (never fully in memory), so the ceiling is about
+    # processing sanity, not RAM. Revit models commonly run to 1 GB.
+    max_upload_bytes: int = 1024 * 1024 * 1024  # 1 GB
+
+    # Region-count guard: a massive DXF emitted 98k text entities - unreviewable
+    # in any UI and pure noise for retrieval. Extraction keeps the most
+    # information-dense regions and discloses the truncation via an advisory.
+    max_regions_per_file: int = 5000
 
     # Two documents whose embeddings are at least this cosine-similar are
     # flagged as possible duplicates. Calibrated on real drawings: the same

@@ -52,7 +52,7 @@ class FileService:
     # "many simultaneous uploads" from an OOM risk into a short queue.
     _extract_slots = threading.Semaphore(2)
 
-    def store_upload(self, filename: str, data: bytes, folder_id: str | None = None) -> dict:
+    def store_upload(self, filename: str, fileobj, folder_id: str | None = None) -> dict:
         """The FAST half of an upload: validate, persist the original to
         object storage, create the record in status 'uploaded'. Returns in
         seconds so the HTTP request is never at the mercy of extraction time
@@ -70,18 +70,28 @@ class FileService:
                 f"'{suffix or filename}' is not a supported file type. "
                 f"Upload one of: {supported}."
             )
-        if len(data) == 0:
+        # `fileobj` streams: size via seek, hash in chunks, multipart to S3 -
+        # a 1 GB Revit model never lives in this process's memory
+        fileobj.seek(0, 2)
+        size = fileobj.tell()
+        fileobj.seek(0)
+        if size == 0:
             raise UnsupportedFileType("The uploaded file is empty.")
-        if len(data) > settings.max_upload_bytes:
+        if size > settings.max_upload_bytes:
             raise FileTooLarge(
-                f"File is {len(data) / 1024 / 1024:.1f} MB; the maximum is "
+                f"File is {size / 1024 / 1024:.1f} MB; the maximum is "
                 f"{settings.max_upload_bytes // (1024 * 1024)} MB."
             )
 
-        content_sha256 = hashlib.sha256(data).hexdigest()
+        digest = hashlib.sha256()
+        for block in iter(lambda: fileobj.read(1024 * 1024), b""):
+            digest.update(block)
+        fileobj.seek(0)
+        content_sha256 = digest.hexdigest()
+
         file_id = self._files.create(filename, suffix.lstrip("."), content_sha256, folder_id)
         s3_key = f"originals/{file_id}/{filename}"
-        self._storage.upload_bytes(data, s3_key)
+        self._storage.upload_fileobj(fileobj, s3_key)
         # persist the key NOW - the background task reads it from the record
         self._files.set_s3_key(file_id, s3_key)
         return {"file_id": file_id, "filename": filename, "status": "uploaded"}
@@ -96,50 +106,93 @@ class FileService:
             return
         s3_key = record["s3_key"]
         try:
-            data = self._storage.download_bytes(s3_key)
-            with self._extract_slots:
-                self._extract_and_store(
-                    file_id, record["filename"],
-                    Path(record["filename"]).suffix.lower(), s3_key, data,
-                )
+            suffix = Path(record["filename"]).suffix.lower()
+            with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
+                self._storage.download_to_path(s3_key, tmp.name)
+                with self._extract_slots:
+                    self._extract_and_store(
+                        file_id, record["filename"], suffix, s3_key, path=tmp.name,
+                    )
             if run_matcher is not None:
                 run_matcher(file_id)
-        except Exception:
+        except Exception as exc:
             logging.getLogger(__name__).exception(
                 "background processing failed for file %s", file_id
             )
             # _extract_and_store already recorded the failure on the row;
-            # anything before/after it gets a generic record so the user can
-            # see and retry rather than staring at a stuck 'uploaded'
+            # anything before/after it gets a record CARRYING THE REAL ERROR -
+            # a generic "failed unexpectedly" makes every incident a log dig
             current = self._files.get(file_id)
             if current is not None and current["status"] == "uploaded":
+                detail = f"{type(exc).__name__}: {exc}"[:300]
                 self._files.mark_failed(
-                    file_id, s3_key, "Processing failed unexpectedly - use Retry."
+                    file_id, s3_key, f"Processing failed - use Retry. ({detail})"
                 )
+
+    # Region priority when a file exceeds the region cap: identity and
+    # structure first, bulk dimensions and notes last.
+    _REGION_PRIORITY = {"summary": 0, "title_block": 1, "component": 2, "bom": 3,
+                        "dimension": 4, "note": 5}
+
+    def _guard_region_count(self, chunks: list[dict]) -> list[dict]:
+        """A pathological file (98k-entity DXF) must not produce an
+        unreviewable extraction. Keep the most valuable regions up to the cap
+        and say exactly what was dropped."""
+        cap = settings.max_regions_per_file
+        if len(chunks) <= cap:
+            return chunks
+        ordered = sorted(
+            range(len(chunks)),
+            key=lambda i: (self._REGION_PRIORITY.get(chunks[i].get("region_type"), 9), i),
+        )
+        keep = set(ordered[:cap])
+        kept = [c for i, c in enumerate(chunks) if i in keep]
+        dropped = len(chunks) - cap
+        advisory = {
+            "region_type": "note",
+            "chunk_text": (
+                f"This file contains {len(chunks):,} text regions - beyond what a "
+                f"review can meaningfully cover. The {cap:,} most significant "
+                f"(title blocks, components, BOMs first) were kept; {dropped:,} "
+                "bulk entities were left out. If something specific is missing, "
+                "export a focused extract of the drawing and upload that."
+            ),
+            "bbox": None,
+            "confidence": "low",
+            "page": 1,
+            "is_drawing": None,
+            "advisory": True,
+        }
+        return [advisory, *kept]
 
     def ingest_upload(self, filename: str, data: bytes, folder_id: str | None = None) -> dict:
         """Synchronous upload+extract, kept for scripts/tests - the API route
         uses store_upload + background process_upload instead."""
-        stored = self.store_upload(filename, data, folder_id)
+        import io
+
+        stored = self.store_upload(filename, io.BytesIO(data), folder_id)
         record = self._files.get(stored["file_id"])
         return self._extract_and_store(
             stored["file_id"], stored["filename"],
-            Path(stored["filename"]).suffix.lower(), record["s3_key"],
-            self._storage.download_bytes(record["s3_key"]),
+            Path(stored["filename"]).suffix.lower(), record["s3_key"], data=data,
         )
 
     def _extract_and_store(
-        self, file_id: str, filename: str, suffix: str, s3_key: str, data: bytes
+        self, file_id: str, filename: str, suffix: str, s3_key: str,
+        data: bytes | None = None, path: str | None = None,
     ) -> dict:
         """Run extraction and persist the result. On failure the row is kept
         with status 'failed' and the error message, so the user sees what went
-        wrong in the document list and can retry without re-uploading."""
+        wrong in the document list and can retry without re-uploading.
+        Accepts an on-disk path (streaming pipeline) or raw bytes (scripts)."""
         extractor = extraction.get_extractor(suffix)
         with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
-            tmp.write(data)
-            tmp.flush()
+            if path is None:
+                tmp.write(data or b"")
+                tmp.flush()
+                path = tmp.name
             try:
-                chunks = [c.model_dump(mode="json") for c in extractor.extract(tmp.name)]
+                chunks = [c.model_dump(mode="json") for c in extractor.extract(path)]
             except BlueprintError as exc:
                 self._files.mark_failed(file_id, s3_key, str(exc))
                 raise
@@ -149,6 +202,7 @@ class FileService:
                 )
                 raise
 
+        chunks = self._guard_region_count(chunks)
         embedding = self._document_embedding(chunks)
         # File-level verdict from the vision summaries (one per page): flagged
         # as not-a-drawing only when EVERY judged page says so; None = the
@@ -203,11 +257,12 @@ class FileService:
             )
         # drops this file's chunks and returns status to 'extracted'
         self._files.release_ingest_claim(file_id)
-        data = self._storage.download_bytes(s3_key)
-        result = self._extract_and_store(
-            file_id, record["filename"], Path(record["filename"]).suffix.lower(),
-            s3_key, data,
-        )
+        suffix = Path(record["filename"]).suffix.lower()
+        with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
+            self._storage.download_to_path(s3_key, tmp.name)
+            result = self._extract_and_store(
+                file_id, record["filename"], suffix, s3_key, path=tmp.name,
+            )
         # region boxes changed: the cached page renders are still valid (same
         # original), but any drawing card mentioning this file is unaffected.
         return result

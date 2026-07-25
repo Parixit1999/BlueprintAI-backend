@@ -20,12 +20,27 @@ def _client():
 
 
 class BedrockEmbedding:
+    # Titan v2 enforces BOTH 50,000 characters AND 8,192 tokens. Dense CAD
+    # text tokenizes at ~3.7 chars/token, so the character clamp must be far
+    # below the character limit; the halving retry covers any text that
+    # tokenizes even worse. Discovered via a DXF whose document text hit 55k
+    # chars / 12k tokens.
+    MAX_EMBED_CHARS = 24_000
+
     def embed(self, text: str) -> list[float]:
-        resp = _client().invoke_model(
-            modelId=settings.bedrock_embed_model,
-            body=json.dumps({"inputText": text, "dimensions": 1024}),
-        )
-        return json.loads(resp["body"].read())["embedding"]
+        clamped = text[: self.MAX_EMBED_CHARS]
+        for _ in range(3):
+            try:
+                resp = _client().invoke_model(
+                    modelId=settings.bedrock_embed_model,
+                    body=json.dumps({"inputText": clamped, "dimensions": 1024}),
+                )
+                return json.loads(resp["body"].read())["embedding"]
+            except _client().exceptions.ValidationException:
+                if len(clamped) < 2_000:
+                    raise
+                clamped = clamped[: len(clamped) // 2]
+        raise RuntimeError("embedding input could not be reduced to fit model limits")
 
 
 def _image_block(image: bytes) -> dict:

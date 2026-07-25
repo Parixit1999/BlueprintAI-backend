@@ -61,11 +61,10 @@ class RenderService:
         return {}
 
     def _generate(self, record: dict, page: int) -> dict:
-        data = self._storage.download_bytes(record["s3_key"])
         suffix = Path(record["filename"]).suffix.lower()
         with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
-            tmp.write(data)
-            tmp.flush()
+            # stream to disk - originals can be up to 1 GB
+            self._storage.download_to_path(record["s3_key"], tmp.name)
             try:
                 if suffix == ".dxf":
                     png, extents = render_dxf(tmp.name)

@@ -71,7 +71,8 @@ class FileRepository:
         """Back to 'processing' state for background re-extraction/retry."""
         with self._pool.connection() as conn:
             conn.execute(
-                "UPDATE files SET status = 'uploaded', error = NULL WHERE id = %s",
+                "UPDATE files SET status = 'uploaded', error = NULL, "
+                "processing_started_at = now() WHERE id = %s",
                 (file_id,),
             )
 
@@ -95,7 +96,7 @@ class FileRepository:
         double-inserting every chunk while the first run is still going."""
         with self._pool.connection() as conn:
             row = conn.execute(
-                "UPDATE files SET status = 'ingesting' "
+                "UPDATE files SET status = 'ingesting', processing_started_at = now() "
                 "WHERE id = %s AND status = 'extracted' RETURNING id",
                 (file_id,),
             ).fetchone()

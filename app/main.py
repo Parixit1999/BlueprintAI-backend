@@ -37,25 +37,35 @@ _ERROR_STATUS: list[tuple[type[BlueprintError], int]] = [
 
 
 def _recover_orphaned_ingests() -> None:
-    """A restart guarantees no ingest worker survived (single-process app),
-    so any file still marked 'ingesting' is an orphaned claim - e.g. the
-    server restarted mid-ingest. Release it: drop the partial chunks and
-    return the file to 'extracted' so it can simply be confirmed again."""
+    """Reclaim work orphaned by a crashed instance - but ONLY stale work.
+
+    Multiple instances share the database (2+ ECS tasks with rolling
+    deploys and auto scale-out, plus the local dev stack), so a booting
+    instance must not assume every in-flight row is orphaned: the row may
+    be actively processing on ANOTHER instance right now. A scale-out is
+    even TRIGGERED by heavy extraction, so naive recovery would kill the
+    very job that caused the new instance to start. processing_started_at
+    is stamped whenever a run begins; only rows past any plausible run
+    duration are reclaimed."""
+    STALE = "processing_started_at IS NULL OR processing_started_at < now() - interval '2 hours'"
     with pool.connection() as conn:
+        # schema ensure: column predates some databases (RDS never re-runs
+        # init.sql); idempotent
+        conn.execute(
+            "ALTER TABLE files ADD COLUMN IF NOT EXISTS processing_started_at timestamptz DEFAULT now()"
+        )
         rows = conn.execute(
-            "SELECT id FROM files WHERE status = 'ingesting'"
+            f"SELECT id FROM files WHERE status = 'ingesting' AND ({STALE})"
         ).fetchall()
         for (file_id,) in rows:
             conn.execute("DELETE FROM chunks WHERE source_file_id = %s", (file_id,))
             conn.execute(
                 "UPDATE files SET status = 'extracted' WHERE id = %s", (file_id,)
             )
-        # background extractions die with the process too: anything still
-        # 'uploaded' at startup is stranded - surface it as retryable
         conn.execute(
             "UPDATE files SET status = 'failed', "
             "error = 'Processing was interrupted by a restart - use Retry.' "
-            "WHERE status = 'uploaded'"
+            f"WHERE status = 'uploaded' AND ({STALE})"
         )
 
 

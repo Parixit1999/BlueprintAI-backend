@@ -67,6 +67,14 @@ class FileRepository:
                 "UPDATE files SET s3_key = %s WHERE id = %s", (s3_key, file_id)
             )
 
+    def heartbeat(self, file_id: str) -> None:
+        """Liveness stamp for in-flight extraction/ingestion (see
+        app.services.heartbeat)."""
+        with self._pool.connection() as conn:
+            conn.execute(
+                "UPDATE files SET last_heartbeat_at = now() WHERE id = %s", (file_id,)
+            )
+
     def mark_uploaded(self, file_id: str) -> None:
         """Back to 'processing' state for background re-extraction/retry."""
         with self._pool.connection() as conn:

@@ -10,6 +10,7 @@ from app.exceptions import BlueprintError, FileNotFound, FileTooLarge, Unsupport
 from app.repositories import FileRepository
 from app.services import extraction
 from app.services.ai.base import EmbeddingProvider
+from app.services.heartbeat import Heartbeat
 from app.services.storage import ObjectStorage
 
 
@@ -107,14 +108,19 @@ class FileService:
         s3_key = record["s3_key"]
         try:
             suffix = Path(record["filename"]).suffix.lower()
-            with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
-                self._storage.download_to_path(s3_key, tmp.name)
-                with self._extract_slots:
-                    self._extract_and_store(
-                        file_id, record["filename"], suffix, s3_key, path=tmp.name,
-                    )
-            if run_matcher is not None:
-                run_matcher(file_id)
+            # heartbeat covers the WHOLE background job - including time spent
+            # queued behind the extraction semaphore, where the job is alive
+            # but not yet extracting - so the sweeper never reclaims a row
+            # that is merely waiting for a slot
+            with Heartbeat(self._files, file_id):
+                with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
+                    self._storage.download_to_path(s3_key, tmp.name)
+                    with self._extract_slots:
+                        self._extract_and_store(
+                            file_id, record["filename"], suffix, s3_key, path=tmp.name,
+                        )
+                if run_matcher is not None:
+                    run_matcher(file_id)
         except Exception as exc:
             logging.getLogger(__name__).exception(
                 "background processing failed for file %s", file_id
@@ -192,7 +198,10 @@ class FileService:
                 tmp.flush()
                 path = tmp.name
             try:
-                chunks = [c.model_dump(mode="json") for c in extractor.extract(path)]
+                # heartbeat while extracting: if this worker dies, the sweeper
+                # frees the row within minutes instead of hours
+                with Heartbeat(self._files, file_id):
+                    chunks = [c.model_dump(mode="json") for c in extractor.extract(path)]
             except BlueprintError as exc:
                 self._files.mark_failed(file_id, s3_key, str(exc))
                 raise

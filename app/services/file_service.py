@@ -22,12 +22,14 @@ class FileService:
         embedder: EmbeddingProvider,
         index=None,  # RegistryIndexService; optional to keep tests/tools light
         drawings=None,  # DrawingRepository; optional, enables orphan cleanup
+        renders=None,  # RenderService; enables sheet pre-rendering post-extraction
     ):
         self._files = files
         self._storage = storage
         self._embedder = embedder
         self._index = index
         self._drawings = drawings
+        self._renders = renders
 
     def _document_embedding(self, chunks: list[dict]) -> list[float] | None:
         """One embedding representing the whole document, for semantic
@@ -121,6 +123,11 @@ class FileService:
                         )
                 if run_matcher is not None:
                     run_matcher(file_id)
+                # Pre-render every sheet HERE, in the worker, so no viewer
+                # request ever waits on render generation. Status is already
+                # 'extracted' - review is unblocked while renders fill in.
+                if self._renders is not None:
+                    self._renders.prerender_all(file_id)
         except Exception as exc:
             logging.getLogger(__name__).exception(
                 "background processing failed for file %s", file_id

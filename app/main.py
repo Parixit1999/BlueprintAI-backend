@@ -90,14 +90,25 @@ def _sweeper_loop() -> None:
 
 
 def _ensure_files_schema() -> None:
-    """Idempotent columns for databases that predate them (RDS never re-runs
-    init.sql)."""
+    """Idempotent columns/indexes for databases that predate them (RDS never
+    re-runs init.sql)."""
     with pool.connection() as conn:
         conn.execute(
             "ALTER TABLE files ADD COLUMN IF NOT EXISTS processing_started_at timestamptz DEFAULT now()"
         )
         conn.execute(
             "ALTER TABLE files ADD COLUMN IF NOT EXISTS last_heartbeat_at timestamptz"
+        )
+        # HNSW vector indexes: retrieval was a sequential scan over every
+        # embedding - fine at demo scale, quadratic pain later. First boot
+        # after this ships pays a one-time build (seconds at current volume).
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS chunks_embedding_hnsw "
+            "ON chunks USING hnsw (embedding vector_cosine_ops)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS registry_chunks_embedding_hnsw "
+            "ON registry_chunks USING hnsw (embedding vector_cosine_ops)"
         )
 
 

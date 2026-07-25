@@ -12,8 +12,12 @@ from app.services.extraction.pdf import PdfExtractor
 from app.services.extraction.rvt import RvtExtractor
 
 _FACTORIES = {
-    ".dxf": lambda: DxfExtractor(),
-    ".dwg": lambda: DwgExtractor(),  # LibreDWG (bundled) or ODA converter
+    # CAD text comes from entities (exact); the vision extractor adds what a
+    # structural read cannot see - drawn components and a sheet summary
+    ".dxf": lambda: DxfExtractor(ImageExtractor(get_vision_provider())),
+    ".dwg": lambda: DwgExtractor(  # LibreDWG (bundled) or ODA converter
+        ImageExtractor(get_vision_provider())
+    ),
     # PDF gets a vision extractor too, for the scanned-PDF (no text layer) fallback
     ".pdf": lambda: PdfExtractor(
         ImageExtractor(get_vision_provider()), generator=get_text_generator()

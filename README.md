@@ -6,7 +6,9 @@ AI, files them under projects / drawings / sets / versions, and answers plain-En
 questions about their content — every answer cited down to the exact highlighted region
 of the exact drawing it came from.
 
-**Supported formats:** PDF (vector + scanned) · DXF · DWG (via bundled LibreDWG) ·
+**Supported formats:** PDF (vector + scanned) · DXF (multi-sheet layouts) ·
+DWG (all versions incl. AutoCAD 2018+ via bundled ODA File Converter in the
+production image; LibreDWG fallback for local arm64 dev) ·
 RVT (best-effort: embedded preview + metadata) · PNG · JPG/JPEG · TIF/TIFF · BMP ·
 WEBP · HEIC/HEIF
 

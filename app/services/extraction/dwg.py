@@ -76,10 +76,15 @@ def convert_to_dxf(path: str, out_dir: str) -> Path:
 
 
 class DwgExtractor:
+    def __init__(self, vision=None):
+        # forwarded to the DXF extractor after conversion, so DWG drawings
+        # get the same component-detection vision pass as native DXF
+        self._vision = vision
+
     def extract(self, path: str) -> list[ProvisionalChunk]:
         with tempfile.TemporaryDirectory() as out_dir:
             dxf_path = convert_to_dxf(path, out_dir)
-            chunks = DxfExtractor().extract(str(dxf_path))
+            chunks = DxfExtractor(self._vision).extract(str(dxf_path))
         note = ProvisionalChunk(
             region_type=RegionType.note,
             chunk_text=ACCURACY_NOTE,

@@ -51,9 +51,12 @@ label whatever the drawing actually depicts). Be EXHAUSTIVE but GROUPED:
 emit ONE region per component TYPE, with "text" a short engineer's label
 (e.g. "staircase, U-shaped", "gate valve", "door, single-swing") - never the
 bare word "component" - and put the bbox of EVERY instance of that type in
-"instances" (the first instance also goes in "bbox_pct"). Box instances
-TIGHTLY. Every recognizable drawn element belongs to some group; do not
-skip repeats - count them all via their boxes.
+"instances" (the first instance also goes in "bbox_pct"). Identify each
+component from what you OBSERVE - its drawn shape, standard symbology, and
+context in the drawing - not merely from nearby text labels; when standard
+symbols appear (valve symbols, door swings, section marks, weld symbols),
+name them. Box instances TIGHTLY. Every recognizable drawn element belongs
+to some group; do not skip repeats - count them all via their boxes.
 
 Return ONLY a JSON object of the form
 {"is_drawing": true|false, "summary": "...", "regions": [...]}.

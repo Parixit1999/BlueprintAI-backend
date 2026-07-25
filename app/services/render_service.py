@@ -1,9 +1,14 @@
 """Evidence rendering: per-page PNG of the drawing + extents for bbox overlay.
 
-Renders lazily on first request and caches per page in object storage.
+Every sheet is pre-rendered right after extraction (prerender_all, called
+from the background worker); the lazy per-request path remains as fallback
+for legacy records and prerender failures.
 """
+import logging
 import tempfile
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from app.config import settings
 from app.exceptions import FileNotFound, RenderFailed
@@ -68,6 +73,66 @@ class RenderService:
             return {"1": render}
         return {}
 
+    def prerender_all(self, file_id: str) -> None:
+        """Render every sheet ONCE, right after extraction, in the background
+        worker - so no viewer request ever waits on (or competes with) render
+        generation. Heavy formats are handled efficiently: the original
+        downloads once, a DWG converts once, and a CAD document parses once
+        for all its sheets - unlike the lazy path, which repeats all of that
+        per page. Best-effort: any failure leaves the lazy path as fallback.
+        """
+        record = self._files.get(file_id)
+        if record is None:
+            return
+        pages = self._page_map(record)
+        suffix = Path(record["filename"]).suffix.lower()
+        page_count = max(
+            [c.get("page") or 1 for c in (record.get("extraction") or [])] or [1]
+        )
+        try:
+            with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
+                self._storage.download_to_path(record["s3_key"], tmp.name)
+                if suffix in (".dxf", ".dwg"):
+                    with tempfile.TemporaryDirectory() as out_dir:
+                        dxf_path = tmp.name
+                        if suffix == ".dwg":
+                            converted, _ = convert_to_dxf(tmp.name, out_dir)
+                            dxf_path = str(converted)
+                        import ezdxf
+
+                        from app.services.rendering import (
+                            dxf_sheet_names,
+                            render_dxf_layout,
+                        )
+
+                        doc = ezdxf.readfile(dxf_path)
+                        sheets = dxf_sheet_names(doc)
+                        for i, name in enumerate(sheets, start=1):
+                            if str(i) in pages:
+                                continue
+                            try:
+                                png, extents = render_dxf_layout(doc, name)
+                            except Exception:
+                                continue  # one bad sheet must not stop the rest
+                            pages[str(i)] = self._store_render(record, i, png, extents)
+                            self._files.set_render(file_id, {"pages": pages})
+                elif suffix == ".pdf":
+                    for p in range(1, page_count + 1):
+                        if str(p) in pages:
+                            continue
+                        try:
+                            png, extents = render_pdf_page(tmp.name, p)
+                        except Exception:
+                            continue
+                        pages[str(p)] = self._store_render(record, p, png, extents)
+                        self._files.set_render(file_id, {"pages": pages})
+                else:
+                    if "1" not in pages:
+                        # single-page formats reuse the normal lazy generator
+                        self.get_render(file_id, 1)
+        except Exception:
+            logger.warning("prerender failed for %s", file_id, exc_info=True)
+
     def _generate(self, record: dict, page: int) -> dict:
         suffix = Path(record["filename"]).suffix.lower()
         with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
@@ -100,6 +165,9 @@ class RenderService:
                 raise
             except Exception as exc:
                 raise RenderFailed(f"Could not render this drawing: {exc}") from exc
+        return self._store_render(record, page, png, extents)
+
+    def _store_render(self, record: dict, page: int, png: bytes, extents: list) -> dict:
         # DXF renders stay PNG (line art); everything else is JPEG now
         is_png = png[:8] == b"\x89PNG\r\n\x1a\n"
         ext = "png" if is_png else "jpg"

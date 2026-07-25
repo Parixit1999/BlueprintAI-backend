@@ -12,13 +12,21 @@ from app.services.matching import parse_content
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant that answers questions about engineering "
-    "drawings, using ONLY the extracted context provided with each question.\n\n"
+    "drawings, using the extracted context provided with each question and, "
+    "when one is attached, the drawing image itself.\n\n"
     "Write like a knowledgeable colleague: a natural, complete sentence or two. "
     "State the answer directly and quote any values (dimensions, tolerances, "
     "part numbers, materials) exactly as they appear in the context.\n\n"
     "Rules:\n"
-    "- Never invent or guess. If the context does not contain the answer, say "
-    "so plainly (e.g. \"I couldn't find that in the drawing.\").\n"
+    "- Never invent or guess. But before saying anything is missing or "
+    "unknown, EXHAUST your evidence: when a drawing image is attached, "
+    "examine it carefully - markings, symbols, callouts, line work, how parts "
+    "relate - and answer from direct observation, saying so (e.g. \"Looking "
+    "at the drawing, ...\"). A bare refusal when the image was never examined "
+    "is a wrong answer.\n"
+    "- If neither the context nor careful inspection of the image settles the "
+    "question, say plainly what you looked for and what you DID observe, then "
+    "state what is missing - never just \"I couldn't find that\".\n"
     "- Do NOT mention chunks, context, sources, indices, or reference numbers in "
     "your answer. The user is shown the source regions separately, so never write "
     "things like \"(Source: chunk 3)\" or \"according to the context\".\n"
@@ -249,6 +257,57 @@ class QueryService:
             registry_extra, len(hits) + 1
         )
         hits = hits + registry_extra
+        # Visual evidence for the BEST-matching drawing: text spans several
+        # drawings, but visual questions (markings, symbols, what something
+        # depicts) are answered by looking at the most relevant sheet.
+        # Prefer the drawing the user actually NAMED - as a chunk group, or
+        # failing that as a registry card (its content may not have matched
+        # the query even though the user asked about it directly). Fall back
+        # to the best-scoring group.
+        q_lower = question.lower()
+        named = next(
+            (
+                g
+                for g in groups[:MAX_DRAWINGS]
+                if g[0].get("dwg_number") and g[0]["dwg_number"].lower() in q_lower
+            ),
+            None,
+        )
+        top_hit = (named or groups[0])[0]
+        image = (
+            self._drawing_image(top_hit["source_file_id"], top_hit.get("page") or 1)
+            if top_hit.get("source_file_id")
+            else None
+        )
+        if named is None and self._drawings is not None:
+            named_card = next(
+                (
+                    r
+                    for r in registry_extra
+                    if r.get("entity_type") == "drawing"
+                    and r.get("label")
+                    and r["label"].lower() in q_lower
+                ),
+                None,
+            )
+            if named_card:
+                files = self._drawings.files_for_drawing(named_card["entity_id"])
+                usable = [f for f in files if f.get("status") in ("extracted", "ingested")]
+                if usable:
+                    named_image = self._drawing_image(usable[0]["file_id"], 1)
+                    if named_image:
+                        image = named_image
+                        top_hit = {"dwg_number": named_card["label"]}
+        image_note = (
+            f"\nThe sheet image for drawing {self._group_label(top_hit)} is "
+            "ATTACHED - it is first-class evidence. For questions about "
+            "markings, symbols, components, or what the drawing depicts, "
+            "examine the image and answer from direct observation (prefixed "
+            "like \"Looking at the drawing, ...\") before concluding anything "
+            "is missing. The other drawings are represented by text only.\n"
+            if image
+            else ""
+        )
         prompt = (
             SYSTEM_PROMPT,
             "The relevant information spans MULTIPLE drawings. For every fact in "
@@ -257,12 +316,13 @@ class QueryService:
             "drawings into one unattributed statement. If the question compares "
             "attributes across the drawings, answer with a GitHub-flavored "
             "markdown table: one row per attribute, one column per drawing, and "
-            "a dash for anything the context does not state.\n\n"
+            f"a dash for anything the context does not state.\n{image_note}\n"
             f"{context}\n\nQuestion: {question}",
         )
         return {
             "answer": None,
             "prompt": prompt,
+            "image": image,
             "evidence": hits,
             "version_context": None,
             "multi_drawing": True,
@@ -278,14 +338,34 @@ class QueryService:
             f"[{i + 1}] ({h['entity_type']} record) {h['chunk_text']}"
             for i, h in enumerate(hits)
         )
+        # Registry cards are METADATA - when the question is really about the
+        # drawing itself ("what does the 6 marking mean?"), the answer is on
+        # the sheet, not in the registry. If the hits name one drawing that
+        # has a file, attach its image so the model can LOOK.
+        image = None
+        drawing_ids = {h["entity_id"] for h in hits if h["entity_type"] == "drawing"}
+        if len(drawing_ids) == 1 and self._drawings is not None:
+            files = self._drawings.files_for_drawing(next(iter(drawing_ids)))
+            usable = [f for f in files if f.get("status") in ("extracted", "ingested")]
+            if usable:
+                image = self._drawing_image(usable[0]["file_id"], 1)
+        image_note = (
+            "\nThe registry records above are METADATA. The drawing image "
+            "itself is ATTACHED - examine it and answer visual questions "
+            "(markings, symbols, components, layout) from direct observation, "
+            "prefixed like \"Looking at the drawing, ...\"."
+            if image
+            else ""
+        )
         prompt = (
             SYSTEM_PROMPT,
-            "Context from the drawing registry (projects, drawings, sets, versions):\n"
-            f"{context}\n\nQuestion: {question}",
+            "Context from the drawing registry (projects, drawings, sets, versions):"
+            f"{image_note}\n{context}\n\nQuestion: {question}",
         )
         # registry cards describe their own version relationships in the text;
         # answers may combine several records, each cited as evidence
-        return {"answer": None, "prompt": prompt, "evidence": hits, "version_context": None,
+        return {"answer": None, "prompt": prompt, "image": image, "evidence": hits,
+                "version_context": None,
                 "multi_drawing": len({h["entity_id"] for h in hits}) > 1}
 
     @staticmethod
@@ -484,11 +564,16 @@ class QueryService:
         # geometry, how parts relate - not just recite extracted text.
         image = self._drawing_image(primary_file_id, hits[0].get("page") or 1)
         image_note = (
-            "\nYou can also SEE the drawing image. Use it to describe what the "
-            "drawing depicts (layout, geometry, how parts relate) when the "
-            "question calls for description - but quote exact values "
-            "(dimensions, part numbers, materials) only from the extracted "
-            "context, since that is what the citations point to."
+            "\nThe drawing image is ATTACHED - it is first-class evidence, not "
+            "decoration. Examine it before answering: identify components, "
+            "symbols, balloons/callouts, and spatial relationships by looking. "
+            "If the extracted context does not answer the question, search the "
+            "image for the answer and report what you observe (prefixed like "
+            "\"Looking at the drawing, ...\") before concluding anything is "
+            "missing. For exact printed values (dimensions, part numbers, "
+            "materials), prefer the extracted context when it has them, since "
+            "citations point there; observed values you read off the image "
+            "yourself should be flagged as read from the drawing."
             if image
             else ""
         )

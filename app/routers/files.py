@@ -46,8 +46,27 @@ async def upload_file(
 # so they are declared `def`, not `async def`: FastAPI then runs them in its
 # worker threadpool, keeping the event loop free to serve requests concurrently.
 @router.get("")
-def list_files(service: Service):
-    return service.list_files()
+def list_files(
+    service: Service,
+    page: int | None = None,
+    page_size: int = 10,
+    q: str | None = None,
+    file_type: str | None = None,
+    status: str | None = None,
+    assigned: str | None = None,
+    dup_only: bool = False,
+    sort: str = "uploaded",
+    dir: str = "desc",
+):
+    """Paged when `page` is given ({items, total, ...} envelope with filters
+    and sorting run in SQL); legacy full array otherwise (internal callers)."""
+    if page is None:
+        return service.list_files()
+    return service.list_files_paged(
+        q=q, file_type=file_type, status=status, assigned=assigned,
+        dup_only=dup_only, sort=sort, direction=dir, page=page,
+        page_size=page_size,
+    )
 
 
 @router.get("/{file_id}/extraction")

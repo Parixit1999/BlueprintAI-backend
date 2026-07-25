@@ -9,6 +9,7 @@ Bboxes are converted to y-up coordinates (origin bottom-left) so the same
 viewer mapping works for every file type.
 """
 import json
+import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
 
@@ -28,6 +29,9 @@ _DIMENSION_RE = re.compile(
 
 def _classify(text: str) -> RegionType:
     return RegionType.dimension if _DIMENSION_RE.match(text.strip()) else RegionType.note
+
+
+logger = logging.getLogger(__name__)
 
 
 class PdfExtractor:
@@ -59,9 +63,17 @@ class PdfExtractor:
             # (resume, report, letter) that shouldn't be in a drawing archive?
             # Also yields the summary region that vision-path documents get.
             verdict_chunk = self._judge_text(chunks)
+            # The text layer carries every printed word but never the DRAWN
+            # content - a born-digital plan set extracted thousands of exact
+            # notes and zero components. Unless the judge says this is prose,
+            # run the component vision pass over the first sheets, same as
+            # CAD files get.
+            vision_chunks: list[ProvisionalChunk] = []
+            if verdict_chunk is None or verdict_chunk.is_drawing is not False:
+                vision_chunks = self._vision_components(doc)
             if verdict_chunk is not None:
-                chunks = [verdict_chunk] + chunks
-            return chunks
+                vision_chunks = [verdict_chunk] + vision_chunks
+            return vision_chunks + chunks
 
         # No embedded text layer -> scanned/photographed PDF. Rasterize each
         # page and run it through vision, the same way image uploads are handled.
@@ -148,6 +160,65 @@ class PdfExtractor:
                                 page=page_index + 1,
                             )
                         )
+        return chunks
+
+    # Component-detection ceiling for text-layer PDFs: vision on every sheet
+    # of a 500-page plan set would cost more than the whole extraction;
+    # matches the CAD extractor's cap.
+    MAX_VISION_PAGES = 8
+
+    def _vision_components(self, doc: "pymupdf.Document") -> list[ProvisionalChunk]:
+        """Component groups for text-layer PDFs, from rendered pages.
+
+        Text regions from vision are dropped - the embedded text layer is
+        already exact. Best-effort: failures never sink the extraction."""
+        if self._image is None:
+            return []
+        pages: list[tuple[int, bytes, float, float]] = []
+        for page_index, page in enumerate(doc):
+            if page_index >= self.MAX_VISION_PAGES:
+                break
+            try:
+                png = page.get_pixmap(dpi=self.SCAN_DPI).tobytes("png")
+            except Exception:
+                continue
+            pages.append((page_index, png, page.rect.width, page.rect.height))
+
+        def analyze(p):
+            try:
+                # skip Textract: the text layer already has exact text
+                return self._image.analyze(p[1], ocr_lines=[])
+            except Exception:
+                logger.warning("PDF component pass failed on page %s", p[0] + 1, exc_info=True)
+                return []
+
+        with ThreadPoolExecutor(max_workers=settings.vision_page_concurrency) as pool:
+            page_regions = list(pool.map(analyze, pages))
+
+        chunks: list[ProvisionalChunk] = []
+        for (page_index, _png, width, height), regions in zip(pages, page_regions):
+            for region in regions:
+                if region.region_type != RegionType.component:
+                    continue
+                chunks.append(
+                    ImageExtractor.region_to_chunk(
+                        region, width, height, page=page_index + 1
+                    )
+                )
+        if len(doc) > self.MAX_VISION_PAGES and chunks:
+            chunks.append(
+                ProvisionalChunk(
+                    region_type=RegionType.note,
+                    chunk_text=(
+                        f"Component detection ran on the first {self.MAX_VISION_PAGES} "
+                        f"of {len(doc)} sheets; text extraction covers all sheets."
+                    ),
+                    bbox=None,
+                    confidence=Confidence.high,
+                    page=1,
+                    advisory=True,
+                )
+            )
         return chunks
 
     def _extract_scanned(self, doc: "pymupdf.Document") -> list[ProvisionalChunk]:

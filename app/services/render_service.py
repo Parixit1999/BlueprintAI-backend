@@ -5,6 +5,7 @@ Renders lazily on first request and caches per page in object storage.
 import tempfile
 from pathlib import Path
 
+from app.config import settings
 from app.exceptions import FileNotFound, RenderFailed
 from app.repositories import FileRepository
 from app.services.extraction.dwg import convert_to_dxf
@@ -33,9 +34,16 @@ class RenderService:
         return {
             "file_id": file_id,
             "page": page,
-            "url": self._storage.presigned_url(entry["s3_key"]),
+            "url": self._render_url(entry["s3_key"]),
             "extents": entry["extents"],
         }
+
+    def _render_url(self, s3_key: str) -> str:
+        """CDN path in production (CloudFront caches /renders/* at the edge;
+        the key is unguessable - file uuid + page); presigned URL otherwise."""
+        if settings.render_cdn:
+            return f"/{s3_key}"
+        return self._storage.presigned_url(s3_key)
 
     def get_render_bytes(self, file_id: str, page: int = 1) -> bytes:
         """The rendered page as PNG bytes - used to let the answer model SEE

@@ -55,6 +55,13 @@ class Settings(BaseSettings):
     # processing sanity, not RAM. Revit models commonly run to 1 GB.
     max_upload_bytes: int = 1024 * 1024 * 1024  # 1 GB
 
+    # Render derivatives served through CloudFront (production): the render
+    # URL becomes the /renders/... path on the app's own domain, which a
+    # dedicated CloudFront behavior caches at the edge - repeat views load
+    # instantly and browsers can cache (presigned URLs change every request,
+    # defeating both caches). Off locally: no CloudFront, so presigned URLs.
+    render_cdn: bool = False
+
     # Region-count guard: a massive DXF emitted 98k text entities - unreviewable
     # in any UI and pure noise for retrieval. Extraction keeps the most
     # information-dense regions and discloses the truncation via an advisory.

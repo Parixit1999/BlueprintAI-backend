@@ -26,6 +26,13 @@ register_heif_opener()
 
 MAX_WIDTH_INCHES = 12
 DPI = 150
+# Render derivatives are for VIEWING - the original in object storage keeps
+# full fidelity. JPEG for continuous-tone scans (5-10x smaller than PNG =
+# 5-10x faster loads); PNG stays for line art (DXF renders), where JPEG
+# artifacts would fuzz thin lines. Long side capped so a huge sheet's
+# derivative stays a fast download.
+JPEG_QUALITY = 80
+MAX_RENDER_SIDE = 3000
 
 
 def render_dxf(path: str) -> tuple[bytes, list[float]]:
@@ -57,9 +64,13 @@ def render_pdf_page(path: str, page: int) -> tuple[bytes, list[float]]:
     if not 1 <= page <= len(doc):
         raise RenderFailed(f"Page {page} does not exist (document has {len(doc)} pages)")
     pdf_page = doc[page - 1]
-    png = pdf_page.get_pixmap(dpi=DPI).tobytes("png")
+    # adaptive DPI: huge sheets render at whatever DPI keeps the long side
+    # under the cap, instead of producing a 12000px derivative
+    long_side_pts = max(pdf_page.rect.width, pdf_page.rect.height)
+    dpi = min(DPI, int(MAX_RENDER_SIDE / (long_side_pts / 72)) or DPI)
+    jpg = pdf_page.get_pixmap(dpi=dpi).tobytes("jpeg", jpg_quality=JPEG_QUALITY)
     # extents in PDF points, y-up (extractor bboxes are flipped to match)
-    return png, [0.0, 0.0, round(pdf_page.rect.width, 3), round(pdf_page.rect.height, 3)]
+    return jpg, [0.0, 0.0, round(pdf_page.rect.width, 3), round(pdf_page.rect.height, 3)]
 
 
 def render_image(path: str) -> tuple[bytes, list[float]]:
@@ -67,7 +78,10 @@ def render_image(path: str) -> tuple[bytes, list[float]]:
         # same EXIF-orientation normalization as extraction, so vision bboxes
         # line up with the preview
         img = ImageOps.exif_transpose(img)
-        width, height = img.size
+        width, height = img.size  # extents stay in ORIGINAL pixels
+        render = img.convert("RGB")
+        if max(render.size) > MAX_RENDER_SIDE:
+            render.thumbnail((MAX_RENDER_SIDE, MAX_RENDER_SIDE))
         buf = io.BytesIO()
-        img.convert("RGB").save(buf, format="PNG")
+        render.save(buf, format="JPEG", quality=JPEG_QUALITY)
     return buf.getvalue(), [0.0, 0.0, float(width), float(height)]

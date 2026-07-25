@@ -92,6 +92,11 @@ class RenderService:
                 raise
             except Exception as exc:
                 raise RenderFailed(f"Could not render this drawing: {exc}") from exc
-        s3_key = f"renders/{record['file_id']}_p{page}.png"
-        self._storage.upload_bytes(png, s3_key, content_type="image/png")
+        # DXF renders stay PNG (line art); everything else is JPEG now
+        is_png = png[:8] == b"\x89PNG\r\n\x1a\n"
+        ext = "png" if is_png else "jpg"
+        s3_key = f"renders/{record['file_id']}_p{page}.{ext}"
+        self._storage.upload_bytes(
+            png, s3_key, content_type="image/png" if is_png else "image/jpeg"
+        )
         return {"s3_key": s3_key, "extents": extents}

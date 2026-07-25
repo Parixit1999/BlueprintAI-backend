@@ -1,4 +1,5 @@
 import logging
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -8,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.db import pool
+from app.services import heartbeat
 from app.repositories import AuthRepository
 from app.services.auth_service import AuthFailed, AuthService
 from app.exceptions import (
@@ -36,26 +38,33 @@ _ERROR_STATUS: list[tuple[type[BlueprintError], int]] = [
 ]
 
 
-def _recover_orphaned_ingests() -> None:
-    """Reclaim work orphaned by a crashed instance - but ONLY stale work.
+# A busy row is reclaimable once its liveness signal has been silent this
+# long. Workers stamp last_heartbeat_at every 45s (app.services.heartbeat),
+# so ~4 missed beats = dead. Rows WITHOUT a heartbeat (claimed by an
+# instance running pre-heartbeat code - mixed fleet during a rolling
+# deploy, or the sub-second window before the first stamp) keep the old
+# conservative 2-hour age rule so a new instance never reclaims work that
+# is alive on an old one.
+_STALE_SQL = (
+    f"(last_heartbeat_at IS NOT NULL AND last_heartbeat_at < now() - interval '{heartbeat.STALE_AFTER}') "
+    "OR (last_heartbeat_at IS NULL AND COALESCE(processing_started_at, created_at) < now() - interval '2 hours')"
+)
+
+
+def _reclaim_stale_work() -> None:
+    """Free busy rows whose worker has stopped heartbeating.
 
     Multiple instances share the database (2+ ECS tasks with rolling
-    deploys and auto scale-out, plus the local dev stack), so a booting
-    instance must not assume every in-flight row is orphaned: the row may
-    be actively processing on ANOTHER instance right now. A scale-out is
-    even TRIGGERED by heavy extraction, so naive recovery would kill the
-    very job that caused the new instance to start. processing_started_at
-    is stamped whenever a run begins; only rows past any plausible run
-    duration are reclaimed."""
-    STALE = "processing_started_at IS NULL OR processing_started_at < now() - interval '2 hours'"
+    deploys and auto scale-out, plus the local dev stack), so nothing may
+    assume an in-flight row is orphaned just because it exists: the row may
+    be actively processing on ANOTHER instance right now - a scale-out is
+    even TRIGGERED by heavy extraction. Liveness, not age, is the test:
+    a healthy 2-hour extraction heartbeats throughout and is never touched;
+    a dead worker's row frees within ~3 minutes. Runs at startup and every
+    minute from the sweeper thread; idempotent and multi-instance safe."""
     with pool.connection() as conn:
-        # schema ensure: column predates some databases (RDS never re-runs
-        # init.sql); idempotent
-        conn.execute(
-            "ALTER TABLE files ADD COLUMN IF NOT EXISTS processing_started_at timestamptz DEFAULT now()"
-        )
         rows = conn.execute(
-            f"SELECT id FROM files WHERE status = 'ingesting' AND ({STALE})"
+            f"SELECT id FROM files WHERE status = 'ingesting' AND ({_STALE_SQL})"
         ).fetchall()
         for (file_id,) in rows:
             conn.execute("DELETE FROM chunks WHERE source_file_id = %s", (file_id,))
@@ -64,8 +73,31 @@ def _recover_orphaned_ingests() -> None:
             )
         conn.execute(
             "UPDATE files SET status = 'failed', "
-            "error = 'Processing was interrupted by a restart - use Retry.' "
-            f"WHERE status = 'uploaded' AND ({STALE})"
+            "error = 'The processing worker stopped responding - use Retry.' "
+            f"WHERE status = 'uploaded' AND ({_STALE_SQL})"
+        )
+
+
+_sweeper_stop = threading.Event()
+
+
+def _sweeper_loop() -> None:
+    while not _sweeper_stop.wait(60):
+        try:
+            _reclaim_stale_work()
+        except Exception:
+            logging.getLogger(__name__).warning("stale-work sweep failed", exc_info=True)
+
+
+def _ensure_files_schema() -> None:
+    """Idempotent columns for databases that predate them (RDS never re-runs
+    init.sql)."""
+    with pool.connection() as conn:
+        conn.execute(
+            "ALTER TABLE files ADD COLUMN IF NOT EXISTS processing_started_at timestamptz DEFAULT now()"
+        )
+        conn.execute(
+            "ALTER TABLE files ADD COLUMN IF NOT EXISTS last_heartbeat_at timestamptz"
         )
 
 
@@ -120,10 +152,14 @@ def _seed_first_user() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     pool.open()
-    _recover_orphaned_ingests()
+    _ensure_files_schema()
+    _reclaim_stale_work()
     _ensure_auth_schema()
     _seed_first_user()
+    sweeper = threading.Thread(target=_sweeper_loop, daemon=True)
+    sweeper.start()
     yield
+    _sweeper_stop.set()
     pool.close()
 
 

@@ -86,7 +86,8 @@ CREATE TABLE IF NOT EXISTS files (
     s3_key        text NOT NULL,            -- original file location
     status        text NOT NULL DEFAULT 'uploaded',  -- uploaded | extracted | reviewed | ingested | failed
     error         text,                     -- extraction failure message when status = 'failed'
-    processing_started_at timestamptz DEFAULT now(),  -- when the current extraction/ingest run began; startup recovery only reclaims stale runs
+    processing_started_at timestamptz DEFAULT now(),  -- when the current extraction/ingest run began
+    last_heartbeat_at timestamptz,           -- liveness stamp from the worker (every 45s); the sweeper reclaims rows silent > 3 min
     content_sha256 text,                    -- hash of the original bytes (exact-match signal)
     embedding     vector(1024),
     is_drawing    boolean,             -- vision verdict; false = not an engineering drawing             -- document-level embedding for semantic duplicate/similarity detection

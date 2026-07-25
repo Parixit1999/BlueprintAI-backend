@@ -6,6 +6,7 @@ from app.config import settings
 from app.exceptions import AlreadyIngested, FileNotFound
 from app.repositories import ChunkRepository, FileRepository
 from app.services.ai.base import EmbeddingProvider
+from app.services.heartbeat import Heartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -51,40 +52,43 @@ class ReviewService:
         if record is None:
             return
         try:
-            # collect what actually gets ingested, then embed CONCURRENTLY -
-            # embedding is the slow step (one model call per region; dense
-            # sheets have hundreds), and the calls are independent
-            to_ingest = []
-            for i, chunk in enumerate(record["extraction"]):
-                if i in rejected:
-                    continue
-                if chunk.get("advisory"):
-                    continue  # pipeline disclosure, not drawing content
-                original = chunk.get("chunk_text")
-                corrected = corrections.get(i)
-                text = corrected if corrected is not None else original
-                if not text:
-                    continue  # unreadable value with no human correction - skip
-                to_ingest.append((chunk, original, corrected, text))
+            # heartbeat while embedding: a dead worker's claim frees in
+            # minutes via the sweeper instead of sticking forever
+            with Heartbeat(self._files, file_id):
+                # collect what actually gets ingested, then embed CONCURRENTLY -
+                # embedding is the slow step (one model call per region; dense
+                # sheets have hundreds), and the calls are independent
+                to_ingest = []
+                for i, chunk in enumerate(record["extraction"]):
+                    if i in rejected:
+                        continue
+                    if chunk.get("advisory"):
+                        continue  # pipeline disclosure, not drawing content
+                    original = chunk.get("chunk_text")
+                    corrected = corrections.get(i)
+                    text = corrected if corrected is not None else original
+                    if not text:
+                        continue  # unreadable value with no human correction - skip
+                    to_ingest.append((chunk, original, corrected, text))
 
-            with ThreadPoolExecutor(max_workers=settings.embed_concurrency) as pool:
-                embeddings = list(
-                    pool.map(lambda item: self._embedder.embed(item[3]), to_ingest)
-                )
+                with ThreadPoolExecutor(max_workers=settings.embed_concurrency) as pool:
+                    embeddings = list(
+                        pool.map(lambda item: self._embedder.embed(item[3]), to_ingest)
+                    )
 
-            for (chunk, original, corrected, text), embedding in zip(to_ingest, embeddings):
-                self._chunks.insert(
-                    source_file_id=file_id,
-                    region_type=chunk.get("region_type", "note"),
-                    chunk_text=text,
-                    bbox=chunk.get("bbox"),
-                    page=chunk.get("page", 1),
-                    confidence=chunk.get("confidence", "high"),
-                    verification_status="corrected" if corrected is not None else "confirmed",
-                    original_value=original,
-                    corrected_value=corrected,
-                    embedding=embedding,
-                )
+                for (chunk, original, corrected, text), embedding in zip(to_ingest, embeddings):
+                    self._chunks.insert(
+                        source_file_id=file_id,
+                        region_type=chunk.get("region_type", "note"),
+                        chunk_text=text,
+                        bbox=chunk.get("bbox"),
+                        page=chunk.get("page", 1),
+                        confidence=chunk.get("confidence", "high"),
+                        verification_status="corrected" if corrected is not None else "confirmed",
+                        original_value=original,
+                        corrected_value=corrected,
+                        embedding=embedding,
+                    )
         except Exception:
             # failed midway: drop partial chunks and return to 'extracted'
             # so the review can simply be confirmed again

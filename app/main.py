@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
@@ -145,6 +146,12 @@ async def require_auth(request: Request, call_next):
     request.state.user = user
     return await call_next(request)
 
+
+# Region-heavy documents produce multi-MB JSON payloads (a 5,000-region
+# extraction is ~4 MB raw, ~10x smaller gzipped) - compress everything
+# sizeable. Inner to auth/CORS; SSE streaming responses are not buffered
+# by GZipMiddleware, so chat streaming keeps flowing chunk by chunk.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # added after the auth middleware so CORS is outermost (handles preflight
 # and stamps headers onto auth 401s)

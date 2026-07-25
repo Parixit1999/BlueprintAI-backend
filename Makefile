@@ -9,6 +9,7 @@ LOCAL = -f docker-compose.yml -f docker-compose.local.yml
 .PHONY: up up-local down build logs status models health clean
 
 up: ## build and start the stack against real S3 (default, needs aws login)
+	@test -d ../BlueprintAI-frontend || { echo "ERROR: ../BlueprintAI-frontend not found - the frontend repo must sit NEXT TO this folder (unzip/clone BlueprintAI-frontend alongside BlueprintAI-backend), because docker-compose builds it from that path."; exit 1; }
 	docker compose up -d --build --remove-orphans
 	@echo "\nBlueprintAI is starting (cloud storage - real S3):"
 	@echo "  app:      http://localhost:5175"
@@ -16,6 +17,7 @@ up: ## build and start the stack against real S3 (default, needs aws login)
 	@echo "\nOffline/local storage instead?  make up-local"
 
 up-local: ## build and start the stack against local MinIO storage
+	@test -d ../BlueprintAI-frontend || { echo "ERROR: ../BlueprintAI-frontend not found - the frontend repo must sit NEXT TO this folder (unzip/clone BlueprintAI-frontend alongside BlueprintAI-backend), because docker-compose builds it from that path."; exit 1; }
 	docker compose $(LOCAL) up -d --build
 	@echo "\nBlueprintAI is starting (local storage - MinIO):"
 	@echo "  app:      http://localhost:5175"

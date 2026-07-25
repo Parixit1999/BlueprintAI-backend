@@ -15,6 +15,7 @@ RUN curl -fsSL -o /tmp/libredwg.tar.xz \
     && cp programs/dwg2dxf /usr/local/bin/dwg2dxf
 
 FROM python:3.12-slim
+ARG TARGETARCH
 
 WORKDIR /app
 
@@ -24,6 +25,28 @@ COPY --from=libredwg-build /usr/local/bin/dwg2dxf /usr/local/bin/dwg2dxf
 # installed, DXF text renders as empty outline rectangles
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libfreetype6 fonts-dejavu-core curl && rm -rf /var/lib/apt/lists/*
+
+# ODA File Converter (free, closed-source, x64-only): reads every DWG
+# version including AutoCAD 2018+ (AC1032), which LibreDWG cannot. Its Qt
+# only ships the xcb platform plugin, so it runs under xvfb via the
+# oda-convert wrapper. amd64 (production) only - arm64 dev machines fall
+# back to the bundled LibreDWG dwg2dxf automatically.
+RUN if [ "$TARGETARCH" = "amd64" ]; then \
+      apt-get update && \
+      curl -fsSL -o /tmp/oda.deb \
+        'https://www.opendesign.com/guestfiles/get?filename=ODAFileConverter_QT6_lnxX64_8.3dll_27.1.deb' && \
+      apt-get install -y --no-install-recommends /tmp/oda.deb \
+        xvfb libgl1 libglib2.0-0 libfontconfig1 libxkbcommon0 libdbus-1-3 \
+        libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+        libxcb-render-util0 libxcb-shape0 libxcb-xkb1 libxcb-cursor0 && \
+      rm /tmp/oda.deb && rm -rf /var/lib/apt/lists/* && \
+      printf '#!/bin/sh\nexec xvfb-run -a ODAFileConverter "$@"\n' \
+        > /usr/local/bin/oda-convert && \
+      chmod +x /usr/local/bin/oda-convert ; \
+    fi
+# harmless when the wrapper does not exist (arm64): the converter check
+# does shutil.which() and falls through to dwg2dxf
+ENV ODA_CONVERTER_PATH=/usr/local/bin/oda-convert
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

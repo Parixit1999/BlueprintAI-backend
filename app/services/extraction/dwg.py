@@ -3,11 +3,12 @@
 DWG is Autodesk's proprietary binary format. Two converters are supported,
 tried in order:
 
-1. ODA File Converter (free, closed-source, best fidelity) - used when
-   ODA_CONVERTER_PATH is configured.
+1. ODA File Converter (free, closed-source, reference-quality - reads every
+   DWG version including AutoCAD 2018+ AC1032) - used when
+   ODA_CONVERTER_PATH is configured. The production image ships it (amd64).
 2. LibreDWG's dwg2dxf (free, open-source, bundled in the docker image) -
-   the default. Handles most DWG versions well, but very new or complex
-   drawings may lose some entities, so extractions carry an accuracy note.
+   the fallback. Handles older DWG versions well, but cannot read AC1032
+   and may drop entities, so its extractions carry an accuracy note.
 
 After conversion the drawing flows through the normal DXF extractor, and
 the viewer renders the converted DXF, so bboxes line up.
@@ -37,11 +38,12 @@ ACCURACY_NOTE = (
 )
 
 
-def convert_to_dxf(path: str, out_dir: str) -> Path:
+def convert_to_dxf(path: str, out_dir: str) -> tuple[Path, str]:
     """Convert a DWG to DXF in out_dir, using the best available converter.
 
     Raises UnsupportedFileType when no converter exists, ExtractionFailed when
-    conversion fails. Returns the produced DXF path.
+    conversion fails. Returns (produced DXF path, converter name) where the
+    converter name is "oda" or "libredwg".
     """
     oda = settings.oda_converter_path
     if oda and shutil.which(oda):
@@ -51,11 +53,11 @@ def convert_to_dxf(path: str, out_dir: str) -> Path:
             # ODAFileConverter <in> <out> <outver> <outtype> <recurse> <audit>
             result = subprocess.run(
                 [oda, in_dir, out_dir, "ACAD2018", "DXF", "0", "1"],
-                capture_output=True, timeout=120,
+                capture_output=True, timeout=600,
             )
             produced = list(Path(out_dir).glob("*.dxf"))
             if result.returncode == 0 and produced:
-                return produced[0]
+                return produced[0], "oda"
 
     if shutil.which("dwg2dxf"):
         out = Path(out_dir) / (Path(path).stem + ".dxf")
@@ -66,7 +68,7 @@ def convert_to_dxf(path: str, out_dir: str) -> Path:
         # dwg2dxf can exit non-zero on recoverable warnings; a usable DXF is
         # the real success signal
         if out.exists() and out.stat().st_size > 0:
-            return out
+            return out, "libredwg"
         raise ExtractionFailed(
             "DWG conversion failed - the file may be corrupt or use a DWG "
             "version LibreDWG cannot read. Export it as DXF or PDF and re-upload."
@@ -83,8 +85,11 @@ class DwgExtractor:
 
     def extract(self, path: str) -> list[ProvisionalChunk]:
         with tempfile.TemporaryDirectory() as out_dir:
-            dxf_path = convert_to_dxf(path, out_dir)
+            dxf_path, converter = convert_to_dxf(path, out_dir)
             chunks = DxfExtractor(self._vision).extract(str(dxf_path))
+        if converter == "oda":
+            # reference-quality conversion - no accuracy caveat needed
+            return chunks
         note = ProvisionalChunk(
             region_type=RegionType.note,
             chunk_text=ACCURACY_NOTE,

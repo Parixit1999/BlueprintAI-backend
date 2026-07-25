@@ -68,13 +68,13 @@ class RenderService:
             tmp.flush()
             try:
                 if suffix == ".dxf":
-                    png, extents = render_dxf(tmp.name)
+                    png, extents = render_dxf(tmp.name, page)
                 elif suffix == ".dwg":
                     # render the same DXF conversion extraction used, so
                     # region bboxes line up with what is on screen
                     with tempfile.TemporaryDirectory() as out_dir:
-                        dxf_path = convert_to_dxf(tmp.name, out_dir)
-                        png, extents = render_dxf(str(dxf_path))
+                        dxf_path, _converter = convert_to_dxf(tmp.name, out_dir)
+                        png, extents = render_dxf(str(dxf_path), page)
                 elif suffix == ".rvt":
                     preview = extract_preview_png(tmp.name)
                     if preview is None:

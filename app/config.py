@@ -45,8 +45,10 @@ class Settings(BaseSettings):
     # budget. Local vision on a detailed scanned drawing can be slow.
     ollama_read_timeout: float = 300.0
 
-    # DWG support: path to the free ODA File Converter binary; when unset,
-    # DWG uploads get guidance to export DXF/PDF instead.
+    # DWG support: path to the free ODA File Converter (the amd64 docker
+    # image ships it as /usr/local/bin/oda-convert and sets this env var).
+    # When unset or missing, conversion falls back to bundled LibreDWG,
+    # which cannot read AutoCAD 2018+ (AC1032) files.
     oda_converter_path: str | None = None
 
     max_upload_bytes: int = 25 * 1024 * 1024  # 25 MB

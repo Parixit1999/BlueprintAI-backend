@@ -28,16 +28,35 @@ MAX_WIDTH_INCHES = 12
 DPI = 150
 
 
-def render_dxf(path: str) -> tuple[bytes, list[float]]:
-    doc = ezdxf.readfile(path)
-    msp = doc.modelspace()
+def dxf_sheet_names(doc) -> list[str]:
+    """Renderable sheets of a DXF document, in tab order.
+
+    Professional CAD files often keep the modelspace EMPTY and put every
+    plottable sheet in a paperspace layout (one layout per drawing sheet),
+    so sheets are: modelspace when it has content, plus every non-empty
+    paperspace layout. Entity count is deliberately not a threshold beyond
+    "non-empty" - a 3-entity layout can hold a full sheet via one block
+    INSERT. Extraction and rendering both use this list, so chunk page
+    numbers and rendered pages always agree.
+    """
+    names = []
+    for name in doc.layout_names_in_taborder():
+        layout = doc.modelspace() if name == "Model" else doc.layout(name)
+        if len(layout):
+            names.append(name)
+    return names or ["Model"]
+
+
+def render_dxf_layout(doc, layout_name: str) -> tuple[bytes, list[float]]:
+    """Render one layout of an already-loaded DXF document."""
+    layout = doc.modelspace() if layout_name == "Model" else doc.layout(layout_name)
 
     fig = plt.figure()
     ax = fig.add_axes([0, 0, 1, 1])
     ctx = RenderContext(doc)
     backend = MatplotlibBackend(ax)
     config = Configuration(background_policy=BackgroundPolicy.WHITE)
-    Frontend(ctx, backend, config=config).draw_layout(msp, finalize=True)
+    Frontend(ctx, backend, config=config).draw_layout(layout, finalize=True)
 
     (xmin, xmax), (ymin, ymax) = ax.get_xlim(), ax.get_ylim()
     width, height = xmax - xmin, ymax - ymin
@@ -50,6 +69,14 @@ def render_dxf(path: str) -> tuple[bytes, list[float]]:
     fig.savefig(buf, format="png", dpi=DPI)
     plt.close(fig)
     return buf.getvalue(), [round(float(v), 3) for v in (xmin, ymin, xmax, ymax)]
+
+
+def render_dxf(path: str, page: int = 1) -> tuple[bytes, list[float]]:
+    doc = ezdxf.readfile(path)
+    sheets = dxf_sheet_names(doc)
+    if not 1 <= page <= len(sheets):
+        raise RenderFailed(f"Sheet {page} does not exist (drawing has {len(sheets)} sheets)")
+    return render_dxf_layout(doc, sheets[page - 1])
 
 
 def render_pdf_page(path: str, page: int) -> tuple[bytes, list[float]]:

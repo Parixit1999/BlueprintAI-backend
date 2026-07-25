@@ -712,15 +712,24 @@ class RegistryChunkRepository:
         self, embedding: list[float], top_k: int, project_id: str | None = None
     ) -> list[dict[str, Any]]:
         vector = json.dumps(embedding)
-        with self._pool.connection() as conn:
+        # Same two-stage shape as chunk search: index-served distance pool,
+        # then RLHF-weighted re-rank.
+        pool_size = max(top_k * 4, 100)
+        with self._pool.connection() as conn, conn.transaction():
+            # SET LOCAL needs a real transaction (pool runs autocommit)
+            conn.execute("SET LOCAL hnsw.ef_search = 200")
             rows = conn.execute(
-                """SELECT entity_type, entity_id, project_id, label, project_name, chunk_text,
-                          (1 - (embedding <=> %s::vector)) * feedback_weight AS score
-                   FROM registry_chunks
-                   WHERE %s::uuid IS NULL OR project_id = %s::uuid
-                   ORDER BY (1 - (embedding <=> %s::vector)) * feedback_weight DESC
+                """SELECT * FROM (
+                       SELECT entity_type, entity_id, project_id, label, project_name, chunk_text,
+                              (1 - (embedding <=> %s::vector)) * feedback_weight AS score
+                       FROM registry_chunks
+                       WHERE %s::uuid IS NULL OR project_id = %s::uuid
+                       ORDER BY embedding <=> %s::vector
+                       LIMIT %s
+                   ) candidates
+                   ORDER BY score DESC
                    LIMIT %s""",
-                (vector, project_id, project_id, vector, top_k),
+                (vector, project_id, project_id, vector, pool_size, top_k),
             ).fetchall()
         return [
             {
@@ -1063,24 +1072,39 @@ class ChunkRepository:
         (file-scoped chat); results carry the drawing/project context so
         evidence can show where a region lives."""
         vector = json.dumps(embedding)
-        with self._pool.connection() as conn:
+        # Two-stage retrieval so the HNSW index can serve the search: the
+        # inner query fetches a candidate pool ordered by PURE distance (the
+        # only ordering a vector index accelerates), the outer re-ranks by
+        # the RLHF-weighted score. The pool is wide enough that a weight
+        # boost cannot promote something from outside it in practice.
+        pool_size = max(top_k * 4, 100)
+        with self._pool.connection() as conn, conn.transaction():
+            # HNSW returns at most ef_search candidates per scan; keep it
+            # ahead of the pool. SET LOCAL needs a real transaction (the
+            # pool runs autocommit, where it would silently no-op).
+            conn.execute("SET LOCAL hnsw.ef_search = 200")
             rows = conn.execute(
-                """SELECT c.source_file_id, c.region_type, c.chunk_text, c.bbox,
-                          c.image_uri, c.page, f.filename,
-                          f.drawing_id, d.dwg_number, p.name AS project_name,
-                          d.version_group_id, d.year, d.drawing_date, d.version_note,
-                          s.set_number, c.id AS chunk_id, c.feedback_weight,
-                          (1 - (c.embedding <=> %s::vector)) * c.feedback_weight AS score
-                   FROM chunks c
-                        JOIN files f ON f.id = c.source_file_id
-                        LEFT JOIN drawings d ON f.drawing_id = d.id
-                        LEFT JOIN projects p ON d.project_id = p.id
-                        LEFT JOIN drawing_sets s ON d.set_id = s.id
-                   WHERE (%s::uuid IS NULL OR d.project_id = %s::uuid)
-                     AND (%s::uuid IS NULL OR c.source_file_id = %s::uuid)
-                   ORDER BY (1 - (c.embedding <=> %s::vector)) * c.feedback_weight DESC
+                """SELECT * FROM (
+                       SELECT c.source_file_id, c.region_type, c.chunk_text, c.bbox,
+                              c.image_uri, c.page, f.filename,
+                              f.drawing_id, d.dwg_number, p.name AS project_name,
+                              d.version_group_id, d.year, d.drawing_date, d.version_note,
+                              s.set_number, c.id AS chunk_id, c.feedback_weight,
+                              (1 - (c.embedding <=> %s::vector)) * c.feedback_weight AS score
+                       FROM chunks c
+                            JOIN files f ON f.id = c.source_file_id
+                            LEFT JOIN drawings d ON f.drawing_id = d.id
+                            LEFT JOIN projects p ON d.project_id = p.id
+                            LEFT JOIN drawing_sets s ON d.set_id = s.id
+                       WHERE (%s::uuid IS NULL OR d.project_id = %s::uuid)
+                         AND (%s::uuid IS NULL OR c.source_file_id = %s::uuid)
+                       ORDER BY c.embedding <=> %s::vector
+                       LIMIT %s
+                   ) candidates
+                   ORDER BY score DESC
                    LIMIT %s""",
-                (vector, project_id, project_id, file_id, file_id, vector, top_k),
+                (vector, project_id, project_id, file_id, file_id, vector,
+                 pool_size, top_k),
             ).fetchall()
         return [
             {

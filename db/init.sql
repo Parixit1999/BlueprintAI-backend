@@ -122,7 +122,10 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 
 CREATE INDEX IF NOT EXISTS chunks_file_idx ON chunks (source_file_id);
--- Plain top-k for MVP; an ivfflat/hnsw index can be added when volume warrants it.
+-- HNSW vector indexes: retrieval fetches a candidate pool by pure cosine
+-- distance (index-served), then re-ranks by RLHF-weighted score in SQL.
+CREATE INDEX IF NOT EXISTS chunks_embedding_hnsw ON chunks USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS registry_chunks_embedding_hnsw ON registry_chunks USING hnsw (embedding vector_cosine_ops);
 
 -- Chat history. user_id defaults to the single global user; real auth later
 -- only needs to start writing real ids here.

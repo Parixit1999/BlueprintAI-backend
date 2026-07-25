@@ -1,8 +1,23 @@
 """Amazon Bedrock provider - Titan embeddings + Claude generation."""
 import json
+import time
 from functools import lru_cache
 
 from app.config import settings
+
+# Bedrock intermittently returns retryable server-side errors ("The system
+# encountered an unexpected error during processing. Try your request
+# again."). botocore only auto-retries throttling/5xx, not these modeled
+# exceptions - and a 5,000-embed ingest gives one flaky call plenty of
+# chances to sink the whole job.
+_TRANSIENT_ERRORS = {
+    "ModelErrorException",
+    "ModelTimeoutException",
+    "ThrottlingException",
+    "ServiceUnavailableException",
+    "InternalServerException",
+}
+_MAX_TRANSIENT_ATTEMPTS = 5
 
 
 @lru_cache(maxsize=1)
@@ -28,18 +43,30 @@ class BedrockEmbedding:
     MAX_EMBED_CHARS = 24_000
 
     def embed(self, text: str) -> list[float]:
+        from botocore.exceptions import ClientError
+
         clamped = text[: self.MAX_EMBED_CHARS]
         for _ in range(3):
-            try:
-                resp = _client().invoke_model(
-                    modelId=settings.bedrock_embed_model,
-                    body=json.dumps({"inputText": clamped, "dimensions": 1024}),
-                )
-                return json.loads(resp["body"].read())["embedding"]
-            except _client().exceptions.ValidationException:
-                if len(clamped) < 2_000:
-                    raise
-                clamped = clamped[: len(clamped) // 2]
+            for attempt in range(_MAX_TRANSIENT_ATTEMPTS):
+                try:
+                    resp = _client().invoke_model(
+                        modelId=settings.bedrock_embed_model,
+                        body=json.dumps({"inputText": clamped, "dimensions": 1024}),
+                    )
+                    return json.loads(resp["body"].read())["embedding"]
+                except _client().exceptions.ValidationException:
+                    break  # too long - fall through to the halving loop
+                except ClientError as exc:
+                    code = exc.response.get("Error", {}).get("Code", "")
+                    if code not in _TRANSIENT_ERRORS or attempt == _MAX_TRANSIENT_ATTEMPTS - 1:
+                        raise
+                    time.sleep(min(2 ** attempt, 8))
+            else:
+                # transient retries exhausted without ValidationException
+                raise RuntimeError("embedding failed after transient-error retries")
+            if len(clamped) < 2_000:
+                raise RuntimeError("embedding input could not be reduced to fit model limits")
+            clamped = clamped[: len(clamped) // 2]
         raise RuntimeError("embedding input could not be reduced to fit model limits")
 
 

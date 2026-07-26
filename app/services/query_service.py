@@ -334,6 +334,13 @@ class QueryService:
         top = meta_hits[0]["score"]
         floor = top * RELATIVE_FLOOR
         hits = [h for h in meta_hits if h["score"] >= floor][:MAX_EVIDENCE]
+        # A DWG number typed in the question is an exact reference. At
+        # thousands-of-cards scale, embeddings cannot tell 10951-W-20 from
+        # 10551-W-25 - anchored cards are deterministic, so they LEAD and
+        # are never crowded out by the semantic pool.
+        anchored = self._anchored_cards(question, hits)
+        if anchored:
+            hits = (anchored + hits)[: max(MAX_EVIDENCE, len(anchored))]
         context = "\n\n".join(
             f"[{i + 1}] ({h['entity_type']} record) {h['chunk_text']}"
             for i, h in enumerate(hits)

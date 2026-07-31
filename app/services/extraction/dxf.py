@@ -141,7 +141,9 @@ class DxfExtractor:
             )
         return chunks
 
-    def _vision_sheet_chunks(self, doc, sheet_name: str, page: int) -> list[ProvisionalChunk]:
+    def _vision_sheet_chunks(
+        self, doc, sheet_name: str, page: int, sheet_texts: list[str] | None = None
+    ) -> list[ProvisionalChunk]:
         """Render one sheet and vision-detect components + summary.
 
         Best-effort by design: CAD text extraction is already complete and
@@ -154,8 +156,12 @@ class DxfExtractor:
 
             png, extents = render_dxf_layout(doc, sheet_name)
             # skip Textract: every piece of text is already extracted from
-            # entities with exact coordinates - OCR would only add cost
-            regions = self._vision.analyze(png, ocr_lines=[])
+            # entities with exact coordinates - OCR would only add cost. That
+            # same entity text is handed over as sheet_texts so numbered
+            # callouts still resolve against the sheet's keynote legend.
+            regions = self._vision.analyze(
+                png, ocr_lines=[], sheet_texts=sheet_texts
+            )
         except Exception:
             logger.warning(
                 "CAD vision pass failed for sheet %r", sheet_name, exc_info=True
@@ -223,9 +229,17 @@ class DxfExtractor:
                         page=page,
                     )
                 )
-            text_chunks.extend(self._sheet_text_chunks(layout, page))
+            sheet_chunks = self._sheet_text_chunks(layout, page)
+            text_chunks.extend(sheet_chunks)
             if page <= _MAX_VISION_SHEETS:
-                vision_chunks.extend(self._vision_sheet_chunks(doc, name, page))
+                vision_chunks.extend(
+                    self._vision_sheet_chunks(
+                        doc,
+                        name,
+                        page,
+                        sheet_texts=[c.chunk_text for c in sheet_chunks if c.chunk_text],
+                    )
+                )
 
         if self._vision is not None and len(sheets) > _MAX_VISION_SHEETS:
             vision_chunks.append(

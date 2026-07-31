@@ -3,15 +3,23 @@
 Vision output is the least reliable extraction path, which is exactly why every
 field carries model-reported confidence and flows through HITL review before
 ingestion. The model is instructed to return null rather than guess.
+
+Two passes, not one. This overview pass reads the whole sheet: text, layout,
+what the drawing depicts, and a first look at the drawn components. It cannot
+see small components - a whole E-size sheet arrives at 1568px - so the
+components it reports are only seeds for `components.detect`, which zooms in
+and does the real work. See that module for why.
 """
 import io
 import json
+import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from PIL import Image, UnidentifiedImageError
 from pillow_heif import register_heif_opener
 
+from app.config import settings
 from app.exceptions import ExtractionFailed, InvalidFile
 from app.services.extraction.ocr import normalize_text, textract_lines
 
@@ -19,7 +27,17 @@ from app.services.extraction.ocr import normalize_text, textract_lines
 register_heif_opener()
 from app.schemas import Confidence, ProvisionalChunk, RegionType
 from app.services.ai.base import VisionProvider
+from app.services.extraction import callouts as callout_util
+from app.services.extraction import components as component_util
+from app.services.extraction.components import (
+    Detection,
+    SheetContext,
+    downscale_for_vision,
+    to_pct,
+)
 from app.services.extraction.enhance import enhance_for_vision
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -37,53 +55,80 @@ class VisionRegion:
     extra_bboxes_pct: list[list[float]] | None = None
     is_drawing: bool | None = None  # summary region only: vision verdict
 
+
 PROMPT = """You are extracting content from an engineering drawing image.
 The image is {width}x{height} pixels.
 
-Find EVERY piece of visible text in the image - title block fields, drawing
-numbers, dimensions, notes, labels. Each one is its own region; do not merge
-or skip any.
-
-ALSO identify the DRAWN COMPONENTS - physical elements depicted in the
-drawing itself, not text: stairs, pipes, valves, pumps, doors, walls, tanks,
-ducts, structural members, fixtures, major equipment (these are examples;
-label whatever the drawing actually depicts). Be EXHAUSTIVE but GROUPED:
-emit ONE region per component TYPE, with "text" a short engineer's label
-(e.g. "staircase, U-shaped", "gate valve", "door, single-swing") - never the
-bare word "component" - and put the bbox of EVERY instance of that type in
-"instances" (the first instance also goes in "bbox_pct"). Identify each
-component from what you OBSERVE - its drawn shape, standard symbology, and
-context in the drawing - not merely from nearby text labels; when standard
-symbols appear (valve symbols, door swings, section marks, weld symbols),
-name them. Box instances TIGHTLY. Every recognizable drawn element belongs
-to some group; do not skip repeats - count them all via their boxes.
-
-Return ONLY a JSON object of the form
-{"is_drawing": true|false, "summary": "...", "regions": [...]}.
+Return ONLY a JSON object of this form:
+{"is_drawing": true|false, "discipline": "...", "sheet_title": "...",
+ "drawing_number": "...", "summary": "...", "regions": [...]}
 
 "is_drawing" is false when the image is NOT an engineering/technical drawing
 (a photo, screenshot, document scan of prose, etc.). Judge honestly.
+
+"discipline" is the drawing's trade - architectural, structural, mechanical,
+electrical, plumbing, civil, process, survey, or other. A later pass uses this
+to read the symbols correctly, so answer it even when you have to infer it.
+
+"sheet_title" and "drawing_number" are the title-block values, or null.
 
 "summary" is one rich paragraph describing what the drawing DEPICTS as an
 engineer would: what kind of drawing it is, what is shown (equipment,
 structures, plans, sections), the overall layout, and anything notable.
 Mention the drawing number and title if visible. Do not guess at values.
 
-Each element of "regions" describes one text region:
+"regions" holds three kinds of entry:
+
+1. TEXT - every piece of visible text: title block fields, drawing numbers,
+   dimensions, notes, labels. Each one is its own region; do not merge or skip
+   any.
+
+2. DRAWN COMPONENTS - physical elements the drawing depicts, not text: valves,
+   pumps, fittings, pipes, ducts, dampers, stairs, doors, windows, walls,
+   beams, columns, footings, fixtures, drains, panels, tanks, major equipment
+   (these are examples - label whatever this drawing actually depicts).
+   Identify each from its drawn shape, standard symbology and its context in
+   the sheet, not merely from text printed near it. Emit ONE region per
+   component TYPE and list EVERY instance of that type in "instances", one
+   box each.
+   - Box each instance TIGHTLY around the symbol itself.
+   - One instance box contains ONE component. NEVER put a box around a group
+     of different components: if a rectangle would cover a pump AND its pad
+     AND its piping, emit those as separate components instead. Any box
+     covering more than a quarter of the sheet is almost certainly this
+     mistake.
+   - Small components matter as much as large ones - do not skip them.
+   - "text" is a short engineer's label ("gate valve", "single-swing door",
+     "W12x26 beam"). NEVER the bare word "component", "part" or "equipment".
+
+3. NUMBERED CALLOUTS - the numbered bubbles (1, 2, 3 ... usually circled,
+   hexagonal or boxed, often on a leader line) that key a component to a
+   keynote list. Emit type "callout", "text" set to just the number, and
+   "bbox_pct" on the bubble itself. When you can see which component a bubble
+   points at, ALSO put its number in that component's "callout" field.
+
+Each element of "regions":
 {
-  "text": "the exact text (for component: a short label), or null if illegible - NEVER guess",
-  "type": "note" | "dimension" | "title_block" | "bom" | "component",
+  "text": "the exact text (component: a short label), or null if illegible - NEVER guess",
+  "type": "note" | "dimension" | "title_block" | "bom" | "component" | "callout",
   "bbox_pct": [x1, y1, x2, y2],
-  "instances": [[x1, y1, x2, y2], ...],   // component regions only: every instance
+  "instances": [[x1, y1, x2, y2], ...],   // components only: every instance
+  "callout": "3",                          // components only: its callout number, if any
   "confidence": "high" | "medium" | "low"
 }
 
 bbox_pct is [x1, y1, x2, y2] in PIXELS of this {width}x{height} image,
-measured from the TOP-LEFT corner. Draw the box TIGHTLY around the text it
+measured from the TOP-LEFT corner. Draw the box TIGHTLY around what it
 contains - it is used to highlight the exact region on the drawing.
-Use confidence "low" for anything small, blurry, or partially obscured. If a
-value is illegible, set text to null and confidence to "low". No prose
-outside the JSON object.{ocr_section}"""
+
+"confidence" describes how certain you are of what you reported:
+- "high": you can read the text exactly, or name the component confidently
+  from a clear symbol.
+- "medium": mostly certain, with real ambiguity.
+- "low": genuinely uncertain. If a value is illegible, also set "text" to null.
+Size is NOT a confidence criterion. A small but clearly drawn valve is high
+confidence; judge legibility and certainty, never scale.
+No prose outside the JSON object.{ocr_section}"""
 
 # Appended to the prompt when Textract OCR lines are available. The OCR pass
 # reads the FULL-resolution image, so it sees small text the downscaled
@@ -102,57 +147,48 @@ _REGION_MAP = {
     "title_block": RegionType.title_block,
     "bom": RegionType.bom,
     "component": RegionType.component,
+    # A callout bubble IS text on the sheet; it is stored as a note whose
+    # meaning has been resolved against the keynote legend. It deliberately
+    # does not become its own RegionType: the value is in the mapping, and a
+    # new type would need every consumer to learn about it.
+    "callout": RegionType.note,
 }
 
 
-def _parse_is_drawing(raw: str) -> bool | None:
-    """The explicit is-this-a-drawing verdict; None when absent/unparseable."""
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", raw)
+def _parse_payload(raw: str) -> dict:
+    """The model's response as one object.
+
+    Preferred: the documented {"regions": [...]} contract. Two fallbacks kept
+    from earlier providers - a bare array of regions, and an object embedded in
+    prose. Parsed ONCE here rather than three times by three helpers.
+    """
+    text = (raw or "").strip()
+    if text.startswith("```"):  # some providers fence their JSON
+        text = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", text).strip()
     try:
-        obj = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    verdict = obj.get("is_drawing") if isinstance(obj, dict) else None
-    return verdict if isinstance(verdict, bool) else None
-
-
-def _parse_summary(raw: str) -> str | None:
-    """The whole-drawing description from the {"summary": ...} contract."""
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", raw)
-    try:
-        obj = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    summary = obj.get("summary") if isinstance(obj, dict) else None
-    return summary.strip() if isinstance(summary, str) and summary.strip() else None
-
-
-def _parse_response(raw: str) -> list[dict]:
-    # Preferred: the {"regions": [...]} object contract. Fall back to a bare
-    # array for models/providers that return one.
-    raw = raw.strip()
-    if raw.startswith("```"):  # some providers fence their JSON
-        raw = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", raw)
-    try:
-        obj = json.loads(raw)
-        if isinstance(obj, dict) and isinstance(obj.get("regions"), list):
-            return obj["regions"]
-        if isinstance(obj, list):
-            return obj
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, list):
+            return {"regions": parsed}
     except json.JSONDecodeError:
         pass
-    match = re.search(r"\[.*\]", raw, re.DOTALL)
-    if match is None:
+    obj_match = re.search(r"\{.*\}", text, re.DOTALL)
+    if obj_match:
+        try:
+            parsed = json.loads(obj_match.group(0))
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+    arr_match = re.search(r"\[.*\]", text, re.DOTALL)
+    if arr_match is None:
         raise ExtractionFailed(
             "The vision model did not return structured output for this image. "
             "Try a clearer or higher-resolution image."
         )
     try:
-        parsed = json.loads(match.group(0))
+        parsed = json.loads(arr_match.group(0))
     except json.JSONDecodeError:
         raise ExtractionFailed(
             "The vision model returned malformed output for this image. "
@@ -160,84 +196,166 @@ def _parse_response(raw: str) -> list[dict]:
         )
     if not isinstance(parsed, list):
         raise ExtractionFailed("The vision model returned an unexpected structure.")
-    return parsed
+    return {"regions": parsed}
+
+
+def _as_confidence(value) -> Confidence:
+    return (
+        Confidence(value)
+        if value in {c.value for c in Confidence}
+        else Confidence.medium
+    )
+
+
+def _clean_str(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+@dataclass
+class _Parsed:
+    """The overview pass, split into what each downstream stage needs."""
+
+    summary: VisionRegion | None = None
+    context: SheetContext = field(default_factory=SheetContext)
+    text_regions: list[VisionRegion] = field(default_factory=list)
+    component_seeds: list[Detection] = field(default_factory=list)
+    callout_marks: list[Detection] = field(default_factory=list)
+    callout_regions: list[tuple[VisionRegion, str]] = field(default_factory=list)
 
 
 class ImageExtractor:
     def __init__(self, vision: VisionProvider):
         self._vision = vision
 
-    @staticmethod
-    def _to_pct(values: list, sent_width: int, sent_height: int) -> list[float] | None:
-        """Normalize model coords to 0-100 percentages.
+    # Kept as the class's own knobs because callers and tests reference them;
+    # the implementations live in components.py, which every zoomed pass shares.
+    MAX_SIDE = component_util.MAX_VISION_SIDE
+    MAX_BYTES = component_util.MAX_VISION_BYTES
 
-        Vision models ignore coordinate instructions often enough that we
-        detect the scale: fractions (0-1), percentages (0-100), or absolute
-        pixels of the (downscaled) image we sent.
-        """
-        try:
-            x1, y1, x2, y2 = (float(v) for v in values)
-        except (TypeError, ValueError):
-            return None
-        peak = max(x1, y1, x2, y2)
-        if peak <= 1:
-            x1, y1, x2, y2 = (v * 100 for v in (x1, y1, x2, y2))
-        elif peak <= 100:
-            pass
-        else:
-            # absolute pixel coords of the sent image, per axis
-            x1, x2 = (v / sent_width * 100 for v in (x1, x2))
-            y1, y2 = (v / sent_height * 100 for v in (y1, y2))
-        vals = [min(max(v, 0.0), 100.0) for v in (x1, y1, x2, y2)]
-        x1, y1, x2, y2 = vals
-        # models sometimes emit corners in reverse order - normalize, don't reject
-        x1, x2 = sorted((x1, x2))
-        y1, y2 = sorted((y1, y2))
-        if x2 - x1 < 0.1 or y2 - y1 < 0.1:
-            return None  # degenerate box
-        return [x1, y1, x2, y2]
-
-    # Claude vision reads up to ~1568px on the long edge; sending more
-    # resolution than the old 1024 cap materially improves both text
-    # legibility and bbox precision on dense archive sheets.
-    MAX_SIDE = 1568
-
-    # Bedrock's 5 MB image limit applies to the BASE64-encoded payload
-    # (raw x 4/3), so the raw bytes must stay under ~3.9 MB; keep margin
-    MAX_BYTES = 3_600_000
-
-    @staticmethod
-    def _downscale(data: bytes) -> tuple[bytes, int, int]:
-        """Send the model a bounded, known-size image so absolute pixel
-        coordinates in its output can be mapped back reliably. Dense scans at
-        1568px can exceed the provider's byte limit as PNG - fall back to JPEG
-        (visually lossless for scans), shrinking further only if needed."""
-        with Image.open(io.BytesIO(data)) as img:
-            img = img.convert("RGB")
-            if max(img.size) > ImageExtractor.MAX_SIDE:
-                img.thumbnail((ImageExtractor.MAX_SIDE, ImageExtractor.MAX_SIDE))
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            if buf.tell() <= ImageExtractor.MAX_BYTES:
-                return buf.getvalue(), img.width, img.height
-            while True:
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=88)
-                if buf.tell() <= ImageExtractor.MAX_BYTES or min(img.size) < 400:
-                    return buf.getvalue(), img.width, img.height
-                img = img.resize((int(img.width * 0.85), int(img.height * 0.85)), Image.LANCZOS)
+    _downscale = staticmethod(downscale_for_vision)
+    _to_pct = staticmethod(to_pct)
 
     # OCR context cap: enough for a dense sheet without flooding the prompt
     MAX_OCR_LINES = 250
 
-    def analyze(self, data: bytes, ocr_lines: list[dict] | None = None) -> list[VisionRegion]:
+    def _overview(self, raw: str, sent_w: int, sent_h: int) -> _Parsed:
+        """Turn the overview response into summary, context, text regions,
+        component seeds and callout bubbles."""
+        payload = _parse_payload(raw)
+        parsed = _Parsed()
+
+        summary = _clean_str(payload.get("summary"))
+        verdict = payload.get("is_drawing")
+        parsed.context = SheetContext(
+            discipline=_clean_str(payload.get("discipline")),
+            sheet_title=_clean_str(payload.get("sheet_title")),
+            drawing_number=_clean_str(payload.get("drawing_number")),
+            summary=summary,
+        )
+        if summary:
+            parsed.summary = VisionRegion(
+                region_type=RegionType.summary,
+                text=summary,
+                confidence=Confidence.high,
+                bbox_pct=None,  # describes the whole drawing
+                is_drawing=verdict if isinstance(verdict, bool) else None,
+            )
+
+        regions = payload.get("regions")
+        if not isinstance(regions, list):
+            regions = []
+        for item in regions:
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("type")
+            text = _clean_str(item.get("text"))
+            confidence = _as_confidence(item.get("confidence"))
+            primary = None
+            raw_box = item.get("bbox_pct")
+            if isinstance(raw_box, list) and len(raw_box) == 4:
+                primary = to_pct(raw_box, sent_w, sent_h)
+
+            if kind == "component":
+                # Every instance becomes its own detection here. The old
+                # pipeline kept them welded into one region, which is why a
+                # single sloppy box could stand for a dozen real components;
+                # they are regrouped into one review card only at the end,
+                # after each box has been refined and tightened on its own.
+                boxes = []
+                if primary:
+                    boxes.append(primary)
+                instances = item.get("instances")
+                if isinstance(instances, list):
+                    for instance in instances:
+                        if isinstance(instance, list) and len(instance) == 4:
+                            converted = to_pct(instance, sent_w, sent_h)
+                            if converted and converted not in boxes:
+                                boxes.append(converted)
+                number = callout_util.normalize_callout(item.get("callout"))
+                for box in boxes:
+                    parsed.component_seeds.append(
+                        Detection(
+                            label=text,
+                            box=box,
+                            confidence=confidence,
+                            source=component_util.SOURCE_OVERVIEW,
+                            callout=number,
+                        )
+                    )
+                continue
+
+            if kind == "callout":
+                number = callout_util.normalize_callout(text or item.get("callout"))
+                if number and primary:
+                    parsed.callout_marks.append(
+                        Detection(
+                            label=None,
+                            box=primary,
+                            confidence=confidence,
+                            source=component_util.SOURCE_OVERVIEW,
+                            callout=number,
+                        )
+                    )
+                    region = VisionRegion(
+                        region_type=RegionType.note,
+                        text=number,
+                        confidence=confidence,
+                        bbox_pct=primary,
+                    )
+                    parsed.callout_regions.append((region, number))
+                    continue
+                # not a usable number - fall through and keep it as text
+
+            parsed.text_regions.append(
+                VisionRegion(
+                    region_type=_REGION_MAP.get(kind, RegionType.note),
+                    text=text,
+                    confidence=confidence,
+                    bbox_pct=primary,
+                )
+            )
+        return parsed
+
+    def analyze(
+        self,
+        data: bytes,
+        ocr_lines: list[dict] | None = None,
+        sheet_texts: list[str] | None = None,
+    ) -> list[VisionRegion]:
         """Run the vision model on raw image bytes and return regions with
         percentage bboxes. Coordinate-space-agnostic so both photo uploads and
         rasterized scanned-PDF pages can reuse it. Returns [] if nothing found;
         callers decide whether an empty result is an error.
 
         ocr_lines: precomputed Textract lines (tests / reuse); None fetches
-        them, [] skips OCR entirely."""
+        them, [] skips OCR entirely.
+        sheet_texts: text the caller already holds exactly (CAD entities, a PDF
+        text layer). Used to resolve numbered callouts against the sheet's
+        keynote legend, which OCR-free paths could not otherwise read.
+        """
         try:
             with Image.open(io.BytesIO(data)) as img:
                 img.verify()
@@ -248,7 +366,7 @@ class ImageExtractor:
             # full-resolution OCR pass; [] on any failure (graceful fallback)
             ocr_lines = textract_lines(data)
 
-        sent_bytes, sent_w, sent_h = self._downscale(data)
+        sent_bytes, sent_w, sent_h = downscale_for_vision(data)
         # .replace, not .format - the prompt's JSON examples contain braces
         prompt = PROMPT.replace("{width}", str(sent_w)).replace("{height}", str(sent_h))
         if ocr_lines:
@@ -260,82 +378,124 @@ class ImageExtractor:
             )
         else:
             prompt = prompt.replace("{ocr_section}", "")
+
         raw = self._vision.analyze_image(sent_bytes, prompt)
+        parsed = self._overview(raw, sent_w, sent_h)
+
+        # Zoom in on the components: split group-sized boxes, sweep the sheet
+        # in tiles, then name whatever is still anonymous.
+        detected = component_util.detect(
+            vision=self._vision,
+            image_bytes=data,
+            seeds=parsed.component_seeds,
+            callout_marks=parsed.callout_marks,
+            context=parsed.context,
+            detail_calls=settings.component_detail_calls,
+            oversized_area_pct=settings.component_oversized_area_pct,
+            tile_min_scale=settings.component_tile_min_scale,
+            name_limit=settings.component_max_named_per_sheet,
+        )
+
+        # Numbered callouts only mean something once they are resolved against
+        # the sheet's own keynote legend, so gather every text the sheet has:
+        # what the model transcribed, what OCR read, and what the caller
+        # already knows exactly.
+        keynote_sources = [r.text for r in parsed.text_regions if r.text]
+        keynote_sources += [line["text"] for line in ocr_lines]
+        keynote_sources += list(sheet_texts or [])
+        keynotes = callout_util.parse_keynotes(keynote_sources)
+        component_util.apply_keynotes(
+            detected.components, detected.callouts, keynotes
+        )
+
         regions: list[VisionRegion] = []
-        summary = _parse_summary(raw)
-        if summary:
+        if parsed.summary:
+            regions.append(parsed.summary)
+        for card in component_util.group_instances(detected.components):
+            boxes = card["boxes"]
             regions.append(
                 VisionRegion(
-                    region_type=RegionType.summary,
-                    text=summary,
-                    confidence=Confidence.high,
-                    bbox_pct=None,  # describes the whole drawing
-                    is_drawing=_parse_is_drawing(raw),
+                    region_type=card["region_type"],
+                    text=card["text"],
+                    confidence=card["confidence"],
+                    bbox_pct=boxes[0],
+                    extra_bboxes_pct=boxes[1:] or None,
                 )
             )
-        for item in _parse_response(raw):
-            if not isinstance(item, dict):
-                continue
-            bbox_pct = None
-            pct = item.get("bbox_pct")
-            if isinstance(pct, list) and len(pct) == 4:
-                bbox_pct = self._to_pct(pct, sent_w, sent_h)
-            # component groups carry every instance; first doubles as bbox
-            extra: list[list[float]] = []
-            instances = item.get("instances")
-            if isinstance(instances, list):
-                for inst in instances:
-                    if isinstance(inst, list) and len(inst) == 4:
-                        converted = self._to_pct(inst, sent_w, sent_h)
-                        if converted:
-                            extra.append(converted)
-            if extra and bbox_pct is None:
-                bbox_pct = extra[0]
-            if bbox_pct in extra:
-                extra = [b for b in extra if b != bbox_pct]
-            text = item.get("text")
-            n_instances = (1 if bbox_pct else 0) + len(extra)
-            label = str(text).strip() if text else None
-            if label and n_instances > 1:
-                label = f"{label} — {n_instances} instances"
-            confidence = item.get("confidence")
-            regions.append(
-                VisionRegion(
-                    region_type=_REGION_MAP.get(item.get("type"), RegionType.note),
-                    text=label,
-                    confidence=(
-                        Confidence(confidence)
-                        if confidence in {c.value for c in Confidence}
-                        else Confidence.medium
-                    ),
-                    bbox_pct=bbox_pct,
-                    extra_bboxes_pct=extra or None,
-                )
-            )
+        # a bubble reading "3" is unsearchable; resolved it becomes an answer
+        for region, number in parsed.callout_regions:
+            region.text = callout_util.callout_text(number, keynotes.get(number))
+            if keynotes.get(number):
+                region.confidence = Confidence.high
+            regions.append(region)
+        regions.extend(parsed.text_regions)
+
         if ocr_lines:
             self._snap_to_ocr(regions, ocr_lines)
         return regions
 
-    @staticmethod
-    def _snap_to_ocr(regions: list[VisionRegion], ocr_lines: list[dict]) -> None:
+    # How far a vision box may sit from an OCR line that shares its text
+    # before the "match" is a coincidence, as a percentage of the sheet.
+    _MAX_SNAP_DISTANCE_PCT = 12.0
+    # With repeated text ("1", "TYP", "6"), the nearest OCR line only wins if
+    # the runner-up is clearly farther - otherwise which one it is is a guess.
+    _SNAP_AMBIGUITY_RATIO = 1.5
+
+    @classmethod
+    def _snap_to_ocr(cls, regions: list[VisionRegion], ocr_lines: list[dict]) -> None:
         """Replace approximate vision bboxes with Textract's pixel-accurate
-        ones when a region's text matches exactly one OCR line. A confirmed
-        character-for-character OCR match also upgrades confidence: the value
-        was machine-read at full resolution, not transcribed from a
-        downscaled image."""
+        ones. A confirmed character-for-character OCR match also upgrades
+        confidence: the value was machine-read at full resolution, not
+        transcribed from a downscaled image.
+
+        Repeated text used to be given up on entirely, which is exactly the
+        case numbered callouts fall into - a sheet has a dozen "3"s and none of
+        them got a precise box. They are now disambiguated by POSITION: of the
+        lines carrying that text, the one nearest the vision box wins, provided
+        it is unambiguously nearest.
+        """
         by_text: dict[str, list[dict]] = {}
         for line in ocr_lines:
             by_text.setdefault(normalize_text(line["text"]), []).append(line)
         for region in regions:
-            if not region.text:
+            # component labels describe a drawn symbol, not text on the sheet;
+            # matching one against a legend line would move its box onto the
+            # legend
+            if region.region_type == RegionType.component or not region.text:
                 continue
             matches = by_text.get(normalize_text(region.text))
-            if not matches or len(matches) != 1:
-                continue  # absent or ambiguous (repeated text) - keep vision box
-            line = matches[0]
+            if not matches:
+                continue
+            if len(matches) == 1:
+                line = matches[0]
+            else:
+                line = cls._nearest_line(matches, region.bbox_pct)
+                if line is None:
+                    continue
             region.bbox_pct = list(line["bbox_pct"])
             if line["confidence"] >= 90 and region.confidence != Confidence.high:
                 region.confidence = Confidence.high
+
+    @classmethod
+    def _nearest_line(cls, matches: list[dict], box: list[float] | None) -> dict | None:
+        """The OCR line a repeated-text region refers to, or None when it
+        cannot be told apart from another candidate."""
+        if not box:
+            return None
+        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+        scored = []
+        for line in matches:
+            lb = line["bbox_pct"]
+            lx, ly = (lb[0] + lb[2]) / 2, (lb[1] + lb[3]) / 2
+            scored.append((((cx - lx) ** 2 + (cy - ly) ** 2) ** 0.5, line))
+        scored.sort(key=lambda pair: pair[0])
+        best_distance, best = scored[0]
+        if best_distance > cls._MAX_SNAP_DISTANCE_PCT:
+            return None
+        runner_up = scored[1][0]
+        if runner_up < best_distance * cls._SNAP_AMBIGUITY_RATIO:
+            return None
+        return best
 
     @staticmethod
     def _pct_to_extents(pct: list[float], xmax: float, ymax: float) -> list[float]:

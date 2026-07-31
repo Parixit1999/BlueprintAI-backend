@@ -70,7 +70,7 @@ class PdfExtractor:
             # CAD files get.
             vision_chunks: list[ProvisionalChunk] = []
             if verdict_chunk is None or verdict_chunk.is_drawing is not False:
-                vision_chunks = self._vision_components(doc)
+                vision_chunks = self._vision_components(doc, chunks)
             if verdict_chunk is not None:
                 vision_chunks = [verdict_chunk] + vision_chunks
             return vision_chunks + chunks
@@ -167,13 +167,22 @@ class PdfExtractor:
     # matches the CAD extractor's cap.
     MAX_VISION_PAGES = 8
 
-    def _vision_components(self, doc: "pymupdf.Document") -> list[ProvisionalChunk]:
+    def _vision_components(
+        self, doc: "pymupdf.Document", text_chunks: list[ProvisionalChunk] | None = None
+    ) -> list[ProvisionalChunk]:
         """Component groups for text-layer PDFs, from rendered pages.
 
         Text regions from vision are dropped - the embedded text layer is
         already exact. Best-effort: failures never sink the extraction."""
         if self._image is None:
             return []
+        # the exact text layer, per page: numbered callouts resolve against
+        # the sheet's keynote legend without paying for an OCR pass
+        by_page: dict[int, list[str]] = {}
+        for chunk in text_chunks or []:
+            if chunk.chunk_text:
+                by_page.setdefault(chunk.page, []).append(chunk.chunk_text)
+
         pages: list[tuple[int, bytes, float, float]] = []
         for page_index, page in enumerate(doc):
             if page_index >= self.MAX_VISION_PAGES:
@@ -187,7 +196,9 @@ class PdfExtractor:
         def analyze(p):
             try:
                 # skip Textract: the text layer already has exact text
-                return self._image.analyze(p[1], ocr_lines=[])
+                return self._image.analyze(
+                    p[1], ocr_lines=[], sheet_texts=by_page.get(p[0] + 1)
+                )
             except Exception:
                 logger.warning("PDF component pass failed on page %s", p[0] + 1, exc_info=True)
                 return []

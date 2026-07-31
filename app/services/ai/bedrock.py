@@ -20,6 +20,25 @@ _TRANSIENT_ERRORS = {
 _MAX_TRANSIENT_ATTEMPTS = 5
 
 
+def _with_transient_retry(operation):
+    """Run one Bedrock call, retrying the modeled transient errors botocore
+    leaves alone. Component detection turned a sheet into several vision calls
+    instead of one, so a sheet now spends far longer inside its throttle
+    window - and losing the whole extraction to one ThrottlingException on the
+    fourth tile would be a poor trade for the detail those tiles buy."""
+    from botocore.exceptions import ClientError
+
+    for attempt in range(_MAX_TRANSIENT_ATTEMPTS):
+        try:
+            return operation()
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code not in _TRANSIENT_ERRORS or attempt == _MAX_TRANSIENT_ATTEMPTS - 1:
+                raise
+            time.sleep(min(2 ** attempt, 8))
+    raise RuntimeError("Bedrock call failed after transient-error retries")
+
+
 @lru_cache(maxsize=1)
 def _client():
     import boto3
@@ -115,16 +134,18 @@ class BedrockGenerator:
 
 class BedrockVision:
     def analyze_image(self, image_bytes: bytes, prompt: str) -> str:
-        resp = _client().converse(
-            modelId=settings.bedrock_vision_model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [_image_block(image_bytes), {"text": prompt}],
-                }
-            ],
-            # dense archive sheets extract dozens of regions; a low cap
-            # truncates the JSON mid-array and the whole extraction fails
-            inferenceConfig={"maxTokens": 32000},
+        resp = _with_transient_retry(
+            lambda: _client().converse(
+                modelId=settings.bedrock_vision_model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [_image_block(image_bytes), {"text": prompt}],
+                    }
+                ],
+                # dense archive sheets extract dozens of regions; a low cap
+                # truncates the JSON mid-array and the whole extraction fails
+                inferenceConfig={"maxTokens": 32000},
+            )
         )
         return resp["output"]["message"]["content"][0]["text"]

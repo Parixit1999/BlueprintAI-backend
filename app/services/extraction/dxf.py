@@ -34,10 +34,6 @@ logger = logging.getLogger(__name__)
 # Vision output kept for CAD files: what the entity read cannot provide.
 _VISION_KEEP = {RegionType.component, RegionType.summary}
 
-# Vision cost ceiling for huge sheet sets; sheets beyond it still get full
-# entity text extraction, and an advisory notes the limit.
-_MAX_VISION_SHEETS = 8
-
 # Block nesting depth for the INSERT text harvest (sheets-in-a-block are one
 # level; title blocks inside them one more; deeper nesting is exotic).
 _MAX_INSERT_DEPTH = 4
@@ -231,28 +227,12 @@ class DxfExtractor:
                 )
             sheet_chunks = self._sheet_text_chunks(layout, page)
             text_chunks.extend(sheet_chunks)
-            if page <= _MAX_VISION_SHEETS:
-                vision_chunks.extend(
-                    self._vision_sheet_chunks(
-                        doc,
-                        name,
-                        page,
-                        sheet_texts=[c.chunk_text for c in sheet_chunks if c.chunk_text],
-                    )
-                )
-
-        if self._vision is not None and len(sheets) > _MAX_VISION_SHEETS:
-            vision_chunks.append(
-                ProvisionalChunk(
-                    region_type=RegionType.note,
-                    chunk_text=(
-                        f"Component detection ran on the first {_MAX_VISION_SHEETS} "
-                        f"of {len(sheets)} sheets; text extraction covers all sheets."
-                    ),
-                    bbox=None,
-                    confidence=Confidence.high,
-                    page=1,
-                    advisory=True,
+            vision_chunks.extend(
+                self._vision_sheet_chunks(
+                    doc,
+                    name,
+                    page,
+                    sheet_texts=[c.chunk_text for c in sheet_chunks if c.chunk_text],
                 )
             )
 

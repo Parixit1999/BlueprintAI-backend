@@ -48,8 +48,14 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then \
 # does shutil.which() and falls through to dwg2dxf
 ENV ODA_CONVERTER_PATH=/usr/local/bin/oda-convert
 
+# uv resolves and installs the requirements several times faster than pip,
+# and the BuildKit cache mount keeps downloaded wheels across builds - a
+# requirements bump only fetches what changed. --compile-bytecode trades a
+# little build time for faster container starts.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system --compile-bytecode -r requirements.txt
 
 COPY app ./app
 COPY db ./db

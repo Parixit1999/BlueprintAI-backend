@@ -654,6 +654,51 @@ class DrawingRepository:
             {**_drawing_dict(r), "file_count": r[14], "set_number": r[15]} for r in rows
         ]
 
+    def list_registry(self, project_id: str | None) -> list[dict[str, Any]]:
+        """Registry rows for the spreadsheet view: all drawings (Main Book)
+        or one project's drawings, with set number, project name, and file
+        count joined in. The book is thousands of rows, not millions - one
+        query per tab is fine and keeps the grid snappy."""
+        where = "WHERE d.project_id = %s" if project_id else ""
+        params = (project_id,) if project_id else ()
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                f"""SELECT {', '.join('d.' + c for c in _DRAWING_COLS.split(', '))},
+                           (SELECT count(*) FROM files f WHERE f.drawing_id = d.id),
+                           s.set_number, p.name
+                    FROM drawings d
+                    LEFT JOIN drawing_sets s ON d.set_id = s.id
+                    LEFT JOIN projects p ON d.project_id = p.id
+                    {where}
+                    ORDER BY d.dwg_number_norm NULLS LAST, d.created_at""",
+                params,
+            ).fetchall()
+        return [
+            {**_drawing_dict(r), "file_count": r[14], "set_number": r[15],
+             "project_name": r[16]}
+            for r in rows
+        ]
+
+    def count_all(self) -> int:
+        with self._pool.connection() as conn:
+            return conn.execute("SELECT count(*) FROM drawings").fetchone()[0]
+
+    def find_set(self, project_id: str | None, set_number: str) -> dict[str, Any] | None:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT id, project_id, set_number, name FROM drawing_sets "
+                "WHERE project_id IS NOT DISTINCT FROM %s AND set_number = %s",
+                (project_id, set_number),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "set_id": str(row[0]),
+            "project_id": str(row[1]) if row[1] else None,
+            "set_number": row[2],
+            "name": row[3],
+        }
+
     def versions(self, version_group_id: str) -> list[dict[str, Any]]:
         """All drawings in a version group, oldest first (year, then created)."""
         with self._pool.connection() as conn:

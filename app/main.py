@@ -23,7 +23,7 @@ from app.exceptions import (
     UnsupportedFileType,
     VisionUnavailable,
 )
-from app.routers import auth, chats, drawings, files, folders, projects, query, review, stats
+from app.routers import auth, chats, drawings, files, folders, projects, query, registry, review, stats
 
 _ERROR_STATUS: list[tuple[type[BlueprintError], int]] = [
     (AuthFailed, 401),
@@ -226,7 +226,7 @@ app.add_middleware(
 # SPA) can never collide with API paths of the same name behind one domain -
 # CloudFront routes /api/* to the backend and everything else to the site.
 _API_PREFIX = "/api"
-for _r in (auth, files, review, query, chats, stats, projects, drawings, folders):
+for _r in (auth, files, review, query, chats, stats, projects, drawings, folders, registry):
     app.include_router(_r.router, prefix=_API_PREFIX)
 
 

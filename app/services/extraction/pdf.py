@@ -162,11 +162,6 @@ class PdfExtractor:
                         )
         return chunks
 
-    # Component-detection ceiling for text-layer PDFs: vision on every sheet
-    # of a 500-page plan set would cost more than the whole extraction;
-    # matches the CAD extractor's cap.
-    MAX_VISION_PAGES = 8
-
     def _vision_components(
         self, doc: "pymupdf.Document", text_chunks: list[ProvisionalChunk] | None = None
     ) -> list[ProvisionalChunk]:
@@ -185,8 +180,6 @@ class PdfExtractor:
 
         pages: list[tuple[int, bytes, float, float]] = []
         for page_index, page in enumerate(doc):
-            if page_index >= self.MAX_VISION_PAGES:
-                break
             try:
                 png = page.get_pixmap(dpi=self.SCAN_DPI).tobytes("png")
             except Exception:
@@ -216,20 +209,6 @@ class PdfExtractor:
                         region, width, height, page=page_index + 1
                     )
                 )
-        if len(doc) > self.MAX_VISION_PAGES and chunks:
-            chunks.append(
-                ProvisionalChunk(
-                    region_type=RegionType.note,
-                    chunk_text=(
-                        f"Component detection ran on the first {self.MAX_VISION_PAGES} "
-                        f"of {len(doc)} sheets; text extraction covers all sheets."
-                    ),
-                    bbox=None,
-                    confidence=Confidence.high,
-                    page=1,
-                    advisory=True,
-                )
-            )
         return chunks
 
     def _extract_scanned(self, doc: "pymupdf.Document") -> list[ProvisionalChunk]:

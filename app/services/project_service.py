@@ -181,6 +181,46 @@ class DrawingService:
                 self._index.index_drawing(v["drawing_id"])
         return self.get_detail(drawing_id)
 
+    # --- registry (spreadsheet) view ---
+
+    def registry_rows(self, project_id: str | None) -> list[dict]:
+        return self._drawings.list_registry(project_id)
+
+    def registry_count(self) -> int:
+        return self._drawings.count_all()
+
+    def _resolve_set_number(self, project_id: str | None, set_number: str | None) -> str | None:
+        """Spreadsheet cells hold set NUMBERS, the schema holds set ids:
+        find-or-create the set within the drawing's project (mirrors the
+        book importer). Blank clears the membership."""
+        if set_number is None or not set_number.strip():
+            return None
+        set_number = set_number.strip()
+        existing = self._drawings.find_set(project_id, set_number)
+        if existing:
+            return existing["set_id"]
+        return self.create_set(project_id, set_number, None)["set_id"]
+
+    def registry_update(self, drawing_id: str, fields: dict) -> dict:
+        fields = dict(fields)
+        if "set_number" in fields:
+            drawing = self._drawings.get(drawing_id)
+            if drawing is None:
+                raise FileNotFound("Drawing not found")
+            project_id = fields.get("project_id", drawing.get("project_id"))
+            fields["set_id"] = self._resolve_set_number(
+                project_id, fields.pop("set_number")
+            )
+        return self.update(drawing_id, fields)
+
+    def registry_create(self, fields: dict) -> dict:
+        fields = dict(fields)
+        if "set_number" in fields:
+            fields["set_id"] = self._resolve_set_number(
+                fields.get("project_id"), fields.pop("set_number")
+            )
+        return self.create(fields)
+
     def create_set(self, project_id: str | None, set_number: str, name: str | None) -> dict:
         created = self._drawings.create_set(project_id, set_number, name)
         self._index.index_set(created["set_id"], project_id)

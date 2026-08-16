@@ -1100,7 +1100,7 @@ def group_instances(detections: list[Detection]) -> list[dict]:
         cards.append(
             {
                 "region_type": RegionType.component,
-                "text": f"{entry['text']} — {count} instances" if count > 1 else entry["text"],
+                "text": f"{entry['text']} - {count} instances" if count > 1 else entry["text"],
                 "confidence": entry["confidence"],
                 "boxes": boxes,
             }

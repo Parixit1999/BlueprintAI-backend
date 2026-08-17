@@ -86,7 +86,10 @@ class RenderService:
             return
         pages = self._page_map(record)
         suffix = Path(record["filename"]).suffix.lower()
-        page_count = max(
+        # The document's own sheet count when we have it. Falling back to the
+        # highest extracted page means a capped extraction silently stops the
+        # pre-render early, leaving later sheets unviewable.
+        page_count = record.get("page_count") or max(
             [c.get("page") or 1 for c in (record.get("extraction") or [])] or [1]
         )
         try:

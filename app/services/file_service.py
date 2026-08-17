@@ -137,6 +137,18 @@ class FileService:
             with Heartbeat(self._files, file_id):
                 with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
                     self._storage.download_to_path(s3_key, tmp.name)
+                    # record the document's OWN sheet count before extraction:
+                    # everything downstream (viewer, renders) previously
+                    # inferred it from how far extraction got, which under-
+                    # reports the moment a large set hits an extraction cap
+                    try:
+                        pages = extraction.document_page_count(tmp.name, suffix)
+                        if pages:
+                            self._files.set_page_count(file_id, pages)
+                    except Exception:
+                        logging.getLogger(__name__).warning(
+                            "could not read page count for %s", file_id, exc_info=True
+                        )
                     with self._extract_slots:
                         self._extract_and_store(
                             file_id, record["filename"], suffix, s3_key, path=tmp.name,
@@ -325,6 +337,9 @@ class FileService:
                 "project_name": record.get("project_name"),
                 "auto_assigned": record.get("auto_assigned"),
                 "error": record.get("error"),
+                # the document's real sheet count, so the viewer can reach
+                # sheets that extraction never produced a region for
+                "page_count": record.get("page_count"),
                 "chunks": record["extraction"]}
 
     def delete_file(self, file_id: str) -> None:

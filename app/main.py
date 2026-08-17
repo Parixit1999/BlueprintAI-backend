@@ -124,6 +124,9 @@ def _ensure_files_schema() -> None:
             "CREATE INDEX IF NOT EXISTS drawings_deleted_idx "
             "ON drawings (deleted_at) WHERE deleted_at IS NOT NULL"
         )
+        # the document's OWN sheet count, so the viewer and the book stop
+        # inferring it from however far extraction happened to get
+        conn.execute("ALTER TABLE files ADD COLUMN IF NOT EXISTS page_count int")
         # people, not just logins: the workspace has real teammates in it now
         conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name text")
         conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS email text")

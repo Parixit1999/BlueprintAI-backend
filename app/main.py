@@ -115,6 +115,18 @@ def _ensure_files_schema() -> None:
         conn.execute(
             "ALTER TABLE files ADD COLUMN IF NOT EXISTS last_heartbeat_at timestamptz"
         )
+        # soft delete for registry rows: the book hides them, the Deleted page
+        # lists them, and a restore puts the row back with its files intact
+        conn.execute(
+            "ALTER TABLE drawings ADD COLUMN IF NOT EXISTS deleted_at timestamptz"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS drawings_deleted_idx "
+            "ON drawings (deleted_at) WHERE deleted_at IS NOT NULL"
+        )
+        # people, not just logins: the workspace has real teammates in it now
+        conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name text")
+        conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS email text")
         # HNSW vector indexes: retrieval was a sequential scan over every
         # embedding - fine at demo scale, quadratic pain later. First boot
         # after this ships pays a one-time build (seconds at current volume).

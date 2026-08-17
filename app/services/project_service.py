@@ -149,6 +149,9 @@ class DrawingService:
         return after
 
     def delete(self, drawing_id: str) -> None:
+        """Soft delete. The row is dropped from the search index too, so a
+        deleted drawing stops answering chat questions immediately; restoring
+        re-indexes it."""
         drawing = self._drawings.get(drawing_id)
         if drawing is None:
             raise FileNotFound("Drawing not found")
@@ -156,6 +159,19 @@ class DrawingService:
         self._index.remove("drawing", drawing_id)
         if drawing.get("project_id"):
             self._index.index_project(drawing["project_id"])
+
+    def restore(self, drawing_id: str) -> dict:
+        drawing = self._drawings.get(drawing_id)
+        if drawing is None:
+            raise FileNotFound("Drawing not found")
+        self._drawings.restore(drawing_id)
+        self._index.index_drawing(drawing_id)
+        if drawing.get("project_id"):
+            self._index.index_project(drawing["project_id"])
+        return self.get_detail(drawing_id)
+
+    def list_deleted(self) -> list[dict]:
+        return self._drawings.list_deleted()
 
     def link_versions(self, drawing_id: str, other_drawing_id: str) -> dict:
         """Declare two drawings as versions of the same drawing."""

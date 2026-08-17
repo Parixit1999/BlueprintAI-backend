@@ -24,6 +24,11 @@ class AuthFailed(BlueprintError):
     """Wrong credentials or missing/expired token (mapped to 401)."""
 
 
+class UserRejected(BlueprintError):
+    """Account creation/removal validation failure. Like PasswordChangeRejected
+    it must NOT be a 401, or the frontend would sign the admin out mid-form."""
+
+
 class PasswordChangeRejected(BlueprintError):
     """Password change validation failure. Deliberately NOT AuthFailed:
     the frontend treats 401 as an expired session and signs the user out,
@@ -76,6 +81,49 @@ class AuthService:
         self._repo.delete_tokens_for_user(
             user_id, except_sha=self._hash_token(keep_token) if keep_token else None
         )
+
+    # --- account management (single shared workspace, no roles) ---
+
+    def list_users(self) -> list[dict]:
+        return self._repo.list_users()
+
+    def create_user(
+        self,
+        username: str,
+        password: str,
+        full_name: str | None = None,
+        email: str | None = None,
+    ) -> dict:
+        """Add a teammate. Validation mirrors change_password so a new account
+        can never be weaker than an existing one."""
+        username = (username or "").strip().lower()
+        if not username:
+            raise UserRejected("Username is required.")
+        if len(username) < 3:
+            raise UserRejected("Username must be at least 3 characters long.")
+        if len(password or "") < 8:
+            raise UserRejected("Password must be at least 8 characters long.")
+        if self._repo.get_user_by_username(username) is not None:
+            raise UserRejected(f"The username “{username}” is already taken.")
+        user_id = self._repo.create_user(
+            username,
+            bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode(),
+            (full_name or "").strip() or None,
+            (email or "").strip().lower() or None,
+        )
+        return {
+            "user_id": user_id,
+            "username": username,
+            "full_name": (full_name or "").strip() or None,
+            "email": (email or "").strip().lower() or None,
+        }
+
+    def delete_user(self, user_id: str, acting_user_id: str) -> None:
+        if user_id == acting_user_id:
+            raise UserRejected("You cannot remove your own account.")
+        if self._repo.get_user_by_id(user_id) is None:
+            raise UserRejected("That account no longer exists.")
+        self._repo.delete_user(user_id)
 
     def ensure_seed_user(self, username: str, password: str | None) -> str | None:
         """Create the first account when no users exist. Returns the

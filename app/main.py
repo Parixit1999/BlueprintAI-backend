@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.db import pool
-from app.services import heartbeat
+from app.services import heartbeat, jobs
 from app.repositories import AuthRepository
 from app.services.auth_service import AuthFailed, AuthService
 from app.exceptions import (
@@ -81,9 +81,24 @@ def _reclaim_stale_work() -> None:
 _sweeper_stop = threading.Event()
 
 
+def _keepalive_queued_jobs() -> None:
+    """Stamp heartbeats for rows whose job is still WAITING in this
+    instance's executor queues: a queued job is alive, not orphaned, and
+    must not be reclaimed. If this instance dies the stamps stop and the
+    normal reclaim takes over."""
+    ids = jobs.queued_ids()
+    if not ids:
+        return
+    with pool.connection() as conn:
+        conn.execute(
+            "UPDATE files SET last_heartbeat_at = now() WHERE id = ANY(%s)", (ids,)
+        )
+
+
 def _sweeper_loop() -> None:
     while not _sweeper_stop.wait(60):
         try:
+            _keepalive_queued_jobs()
             _reclaim_stale_work()
         except Exception:
             logging.getLogger(__name__).warning("stale-work sweep failed", exc_info=True)

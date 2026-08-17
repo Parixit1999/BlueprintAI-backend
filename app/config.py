@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # with the API: size this with the task's CPU (rasterization is the
     # CPU-heavy part) so background work never starves request handling.
     extract_concurrency: int = 2
+    # Documents ingested (embedded) at once per instance. IO-bound - each job
+    # runs embed_concurrency model calls - so this can sit higher than
+    # extraction on the same CPU.
+    ingest_concurrency: int = 4
 
     # Hybrid OCR: Amazon Textract reads text at full resolution with
     # pixel-accurate boxes; the vision model uses it as a reference and its

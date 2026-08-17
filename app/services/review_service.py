@@ -46,10 +46,15 @@ class ReviewService:
     def run_ingest(
         self, file_id: str, corrections: dict[int, str], rejected: list[int]
     ) -> None:
-        """The slow half: embed + insert every confirmed chunk. Runs in the
-        background after start_ingest claimed the file."""
+        """The slow half: embed + insert every confirmed chunk. Runs on the
+        ingest pool after start_ingest claimed the file."""
         record = self._files.get(file_id)
         if record is None:
+            return
+        if record["status"] != "ingesting":
+            # the claim was reclaimed while this job waited in the queue
+            # (instance died or queue outlived the keepalive) - the row is
+            # back to 'extracted' and the user re-confirms; never double-run
             return
         try:
             # heartbeat while embedding: a dead worker's claim frees in

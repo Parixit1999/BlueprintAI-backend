@@ -1,5 +1,6 @@
 import logging
 import threading
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -196,6 +197,27 @@ app = FastAPI(title="BlueprintAI API", version="0.1.0", lifespan=lifespan)
 async def blueprint_error_handler(request: Request, exc: BlueprintError):
     status = next((code for cls, code in _ERROR_STATUS if isinstance(exc, cls)), 400)
     return JSONResponse(status_code=status, content={"detail": str(exc)})
+
+
+# Per-request timing: one log line per API request with the wall-clock the
+# server spent on it, and a Server-Timing header so browser devtools show the
+# split between server work and network. This is THE tool for "why is the
+# app slow" - grep the access-timing lines and sort.
+_TIMING_LOG = logging.getLogger("access.timing")
+
+
+@app.middleware("http")
+async def time_requests(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    ms = (time.perf_counter() - start) * 1000
+    response.headers["Server-Timing"] = f"app;dur={ms:.0f}"
+    path = request.url.path
+    if not path.endswith("/health"):
+        level = logging.WARNING if ms >= 1000 else logging.INFO
+        _TIMING_LOG.log(level, "%s %s -> %s in %.0fms",
+                        request.method, path, response.status_code, ms)
+    return response
 
 
 # Everything except signing in (and the health probe) requires a session.

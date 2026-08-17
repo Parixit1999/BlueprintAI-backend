@@ -102,6 +102,13 @@ class Settings(BaseSettings):
     # a single request names them all. This caps how many ride in that image -
     # beyond ~12 the panels get too small to read.
     component_max_named_per_sheet: int = 12
+    # How many sheets of a multi-sheet PDF get the component vision pass.
+    # Unbounded, a 117-page record set rasterized every page into memory at
+    # once and queued ~5 vision calls each: the worker was OOM-killed 21
+    # minutes in and the sweeper marked the document failed. The exact text
+    # layer is still extracted from EVERY page - only the drawn-component
+    # pass is capped, and archive sets front-load their key sheets.
+    component_max_pages: int = 12
 
     # Two documents whose embeddings are at least this cosine-similar are
     # flagged as possible duplicates. Calibrated on real drawings: the same

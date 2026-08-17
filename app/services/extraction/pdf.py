@@ -178,8 +178,19 @@ class PdfExtractor:
             if chunk.chunk_text:
                 by_page.setdefault(chunk.page, []).append(chunk.chunk_text)
 
+        # Cap the sheets that get this pass. Rasterizing every page of a large
+        # record set holds all of them in memory at once AND queues several
+        # vision calls each - the combination killed the worker on a 117-page
+        # document. Text extraction above already covered every page.
+        limit = settings.component_max_pages
+        if doc.page_count > limit:
+            logger.info(
+                "PDF component pass capped at %s of %s pages", limit, doc.page_count
+            )
         pages: list[tuple[int, bytes, float, float]] = []
         for page_index, page in enumerate(doc):
+            if page_index >= limit:
+                break
             try:
                 png = page.get_pixmap(dpi=self.SCAN_DPI).tobytes("png")
             except Exception:

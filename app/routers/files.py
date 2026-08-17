@@ -19,6 +19,20 @@ Drawings = Annotated[DrawingService, Depends(drawing_service)]
 Renderer = Annotated[RenderService, Depends(render_service)]
 
 
+class StatusBatch(BaseModel):
+    ids: list[str]
+
+
+@router.post("/statuses")
+def file_statuses(body: StatusBatch, service: Service):
+    """Poll many uploads with ONE request/query: status + region count,
+    never the multi-megabyte extraction payload. POST because 200+ UUIDs
+    exceed sane URL lengths. Sync def: DB-only, runs in the threadpool."""
+    if len(body.ids) > 500:
+        raise HTTPException(status_code=422, detail="At most 500 ids per request.")
+    return {"statuses": service.get_statuses(body.ids)}
+
+
 @router.post("/upload")
 async def upload_file(
     file: UploadFile,
@@ -36,9 +50,12 @@ async def upload_file(
     stored = await run_in_threadpool(
         service.store_upload, file.filename or "unnamed", file.file, folder_id
     )
-    background.add_task(
-        service.process_upload, stored["file_id"], drawings.suggest_and_maybe_assign
-    )
+    # byte-identical re-upload: the document already exists (possibly already
+    # extracted or ingested) - do not restart extraction over it
+    if not stored.get("existing"):
+        background.add_task(
+            service.process_upload, stored["file_id"], drawings.suggest_and_maybe_assign
+        )
     return stored
 
 

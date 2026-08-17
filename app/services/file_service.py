@@ -93,15 +93,24 @@ class FileService:
         content_sha256 = digest.hexdigest()
 
         # Idempotent upload: byte-identical to a live document means this IS
-        # that document - return it instead of minting a duplicate. Makes
-        # re-dropping a whole folder safe (interrupted batches just resume);
-        # failed rows don't count so a genuine retry-by-reupload still works.
+        # that document - return it instead of minting a duplicate, so
+        # re-dropping a whole folder safely resumes an interrupted batch.
+        # A byte-identical FAILED document is that document too: reuse its
+        # row (fresh bytes, fresh extraction) rather than leaving a dead
+        # failed twin behind every retry-by-reupload.
         existing = self._files.find_by_sha(content_sha256)
-        if existing is not None:
+        if existing is not None and existing["status"] != "failed":
             return {
                 "file_id": existing["file_id"], "filename": existing["filename"],
                 "status": existing["status"], "existing": True,
             }
+        if existing is not None:
+            file_id = existing["file_id"]
+            s3_key = f"originals/{file_id}/{filename}"
+            self._storage.upload_fileobj(fileobj, s3_key)
+            self._files.set_s3_key(file_id, s3_key)
+            self._files.reset_for_reprocess(file_id)
+            return {"file_id": file_id, "filename": filename, "status": "uploaded"}
 
         file_id = self._files.create(filename, suffix.lstrip("."), content_sha256, folder_id)
         s3_key = f"originals/{file_id}/{filename}"

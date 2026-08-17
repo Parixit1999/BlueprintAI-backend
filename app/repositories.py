@@ -1,11 +1,15 @@
 """Data access layer - the only place SQL lives."""
 import json
+import time
 from typing import Any
 
 from psycopg_pool import ConnectionPool
 
 
 class FileRepository:
+    # per-process cache for the archive-wide duplicate count (see list_paged)
+    _dup_count_cache: dict[str, Any] = {"count": 0, "at": 0.0, "thr": None}
+
     def __init__(self, pool: ConnectionPool):
         self._pool = pool
 
@@ -155,17 +159,28 @@ class FileRepository:
         }
 
     def find_by_sha(self, content_sha256: str) -> dict[str, Any] | None:
-        """Newest live (non-failed) document with these exact bytes."""
+        """Newest document with these exact bytes; a live row wins over a
+        failed one so re-uploads resume rather than duplicate."""
         with self._pool.connection() as conn:
             row = conn.execute(
                 "SELECT id, filename, status FROM files "
-                "WHERE content_sha256 = %s AND status <> 'failed' "
-                "ORDER BY created_at DESC LIMIT 1",
+                "WHERE content_sha256 = %s "
+                "ORDER BY (status = 'failed') ASC, created_at DESC LIMIT 1",
                 (content_sha256,),
             ).fetchone()
         if row is None:
             return None
         return {"file_id": str(row[0]), "filename": row[1], "status": row[2]}
+
+    def reset_for_reprocess(self, file_id: str) -> None:
+        """Put a failed row back to square one for a fresh extraction run."""
+        with self._pool.connection() as conn:
+            conn.execute(
+                "UPDATE files SET status = 'uploaded', error = NULL, "
+                "extraction = NULL, processing_started_at = now(), "
+                "last_heartbeat_at = NULL WHERE id = %s",
+                (file_id,),
+            )
 
     def get_statuses(self, ids: list[str]) -> list[dict[str, Any]]:
         """Light polling payload for many files at once: status and metadata
@@ -392,10 +407,22 @@ class FileRepository:
                     "SELECT DISTINCT file_type FROM files ORDER BY file_type"
                 ).fetchall()
             ]
-            duplicate_count = conn.execute(
-                f"SELECT count(*) FROM files f WHERE {dup_exists}",
-                (similarity_threshold,),
-            ).fetchone()[0]
+            # The duplicate badge compares every embedding against every other
+            # (O(n^2) vector math) - ~1.5s at a few hundred documents, and the
+            # Documents page polls this endpoint. The count moves slowly, so
+            # each process reuses it for 60s instead of recomputing per poll.
+            now = time.monotonic()
+            cache = FileRepository._dup_count_cache
+            if cache["at"] and now - cache["at"] < 60 and cache["thr"] == similarity_threshold:
+                duplicate_count = cache["count"]
+            else:
+                duplicate_count = conn.execute(
+                    f"SELECT count(*) FROM files f WHERE {dup_exists}",
+                    (similarity_threshold,),
+                ).fetchone()[0]
+                FileRepository._dup_count_cache = {
+                    "count": duplicate_count, "at": now, "thr": similarity_threshold,
+                }
 
         total = rows[0][13] if rows else 0
         items = [

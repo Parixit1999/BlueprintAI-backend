@@ -308,6 +308,9 @@ class FileRepository:
         "type": "f.file_type",
         "status": "f.status",
         "uploaded": "f.created_at",
+        # rank each row by how many documents share its type (within the
+        # current filters), so the most common formats surface first
+        "type_count": "count(*) OVER (PARTITION BY f.file_type)",
     }
 
     def list_paged(
@@ -317,6 +320,7 @@ class FileRepository:
         file_type: str | None = None,
         status: str | None = None,
         assigned: str | None = None,
+        drawing: str | None = None,
         dup_only: bool = False,
         sort: str = "uploaded",
         direction: str = "desc",
@@ -330,7 +334,11 @@ class FileRepository:
         order_col = self._LIST_SORTS.get(sort, "f.created_at")
         order_dir = "ASC" if direction == "asc" else "DESC"
         # stable secondary key so pages never overlap
-        order_sql = f"{order_col} {order_dir} NULLS LAST, f.id"
+        if sort == "type_count":
+            # equal counts tie-break alphabetically; within a type, newest first
+            order_sql = f"{order_col} {order_dir}, f.file_type, f.created_at DESC, f.id"
+        else:
+            order_sql = f"{order_col} {order_dir} NULLS LAST, f.id"
 
         where = ["TRUE"]
         params: list[Any] = []
@@ -349,6 +357,12 @@ class FileRepository:
             where.append("f.drawing_id IS NOT NULL")
         elif assigned == "no":
             where.append("f.drawing_id IS NULL")
+        # the vision verdict: 'no' surfaces content flagged as not an
+        # engineering drawing (photos, forms, ...) for quick review/deletion
+        if drawing == "yes":
+            where.append("f.is_drawing IS TRUE")
+        elif drawing == "no":
+            where.append("f.is_drawing IS FALSE")
         dup_exists = (
             """EXISTS (
                  SELECT 1 FROM files o
@@ -626,7 +640,8 @@ class ProjectRepository:
         with self._pool.connection() as conn:
             rows = conn.execute(
                 """SELECT p.id, p.number, p.name, p.description, p.source, p.created_at,
-                          (SELECT count(*) FROM drawings d WHERE d.project_id = p.id),
+                          (SELECT count(*) FROM drawings d
+                            WHERE d.project_id = p.id AND d.deleted_at IS NULL),
                           (SELECT count(*) FROM drawing_sets s WHERE s.project_id = p.id),
                           (SELECT count(*) FROM files f
                              JOIN drawings d ON f.drawing_id = d.id
@@ -697,8 +712,38 @@ class DrawingRepository:
             )
 
     def delete(self, drawing_id: str) -> None:
+        """Soft delete: the row leaves the book but stays recoverable from the
+        Deleted page. Attached files keep their drawing_id, so restoring brings
+        the row back with its scans still linked."""
         with self._pool.connection() as conn:
-            conn.execute("DELETE FROM drawings WHERE id = %s", (drawing_id,))
+            conn.execute(
+                "UPDATE drawings SET deleted_at = now() WHERE id = %s", (drawing_id,)
+            )
+
+    def restore(self, drawing_id: str) -> None:
+        with self._pool.connection() as conn:
+            conn.execute(
+                "UPDATE drawings SET deleted_at = NULL WHERE id = %s", (drawing_id,)
+            )
+
+    def list_deleted(self) -> list[dict[str, Any]]:
+        """The recycle bin behind the book, newest deletion first."""
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                f"""SELECT {', '.join('d.' + c for c in _DRAWING_COLS.split(', '))},
+                           (SELECT count(*) FROM files f WHERE f.drawing_id = d.id),
+                           s.set_number, p.name, d.deleted_at
+                    FROM drawings d
+                    LEFT JOIN drawing_sets s ON d.set_id = s.id
+                    LEFT JOIN projects p ON d.project_id = p.id
+                    WHERE d.deleted_at IS NOT NULL
+                    ORDER BY d.deleted_at DESC"""
+            ).fetchall()
+        return [
+            {**_drawing_dict(r), "file_count": r[14], "set_number": r[15],
+             "project_name": r[16], "deleted_at": r[17].isoformat()}
+            for r in rows
+        ]
 
     def files_count(self, drawing_id: str) -> int:
         with self._pool.connection() as conn:
@@ -735,7 +780,12 @@ class DrawingRepository:
         or one project's drawings, with set number, project name, and file
         count joined in. The book is thousands of rows, not millions - one
         query per tab is fine and keeps the grid snappy."""
-        where = "WHERE d.project_id = %s" if project_id else ""
+        # soft-deleted rows live in the Deleted page, never in the book
+        where = (
+            "WHERE d.deleted_at IS NULL AND d.project_id = %s"
+            if project_id
+            else "WHERE d.deleted_at IS NULL"
+        )
         params = (project_id,) if project_id else ()
         with self._pool.connection() as conn:
             rows = conn.execute(
@@ -757,7 +807,15 @@ class DrawingRepository:
 
     def count_all(self) -> int:
         with self._pool.connection() as conn:
-            return conn.execute("SELECT count(*) FROM drawings").fetchone()[0]
+            return conn.execute(
+                "SELECT count(*) FROM drawings WHERE deleted_at IS NULL"
+            ).fetchone()[0]
+
+    def count_deleted(self) -> int:
+        with self._pool.connection() as conn:
+            return conn.execute(
+                "SELECT count(*) FROM drawings WHERE deleted_at IS NOT NULL"
+            ).fetchone()[0]
 
     def find_set(self, project_id: str | None, set_number: str) -> dict[str, Any] | None:
         with self._pool.connection() as conn:
@@ -1235,14 +1293,16 @@ class StatsRepository:
                 "SELECT count(*) FROM chat_messages WHERE role = 'user'"
             ).fetchone()[0]
             projects = conn.execute("SELECT count(*) FROM projects").fetchone()[0]
-            drawings = conn.execute("SELECT count(*) FROM drawings").fetchone()[0]
+            drawings = conn.execute(
+                "SELECT count(*) FROM drawings WHERE deleted_at IS NULL"
+            ).fetchone()[0]
             sets = conn.execute("SELECT count(*) FROM drawing_sets").fetchone()[0]
             # sheet totals from the registry, plus how many drawings still
             # have no count recorded (an actionable gap, not just a stat)
             sheets_total, sheets_missing = conn.execute(
                 """SELECT coalesce(sum(sheet_count), 0),
                           count(*) FILTER (WHERE sheet_count IS NULL)
-                   FROM drawings"""
+                   FROM drawings WHERE deleted_at IS NULL"""
             ).fetchone()
             # distinct document pages the extractor has actually read - the
             # "how much of the archive has been processed" number
@@ -1260,7 +1320,9 @@ class StatsRepository:
             # top projects by drawing count, for the dashboard breakdown
             per_project = conn.execute(
                 """SELECT p.id, p.name, p.number, count(d.id) AS drawings
-                   FROM projects p LEFT JOIN drawings d ON d.project_id = p.id
+                   FROM projects p
+                        LEFT JOIN drawings d
+                          ON d.project_id = p.id AND d.deleted_at IS NULL
                    GROUP BY p.id ORDER BY drawings DESC, p.name LIMIT 8"""
             ).fetchall()
             # daily activity for the dashboard trend: uploads and questions,
@@ -1448,13 +1510,43 @@ class AuthRepository:
         with self._pool.connection() as conn:
             return conn.execute("SELECT count(*) FROM users").fetchone()[0]
 
-    def create_user(self, username: str, password_hash: str) -> str:
+    def create_user(
+        self,
+        username: str,
+        password_hash: str,
+        full_name: str | None = None,
+        email: str | None = None,
+    ) -> str:
         with self._pool.connection() as conn:
             row = conn.execute(
-                "INSERT INTO users (username, password_hash) VALUES (%s, %s) RETURNING id",
-                (username.strip().lower(), password_hash),
+                "INSERT INTO users (username, password_hash, full_name, email) "
+                "VALUES (%s, %s, %s, %s) RETURNING id",
+                (username.strip().lower(), password_hash, full_name, email),
             ).fetchone()
         return str(row[0])
+
+    def list_users(self) -> list[dict]:
+        """Everyone with an account, for the Users page. Never returns hashes."""
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT id, username, full_name, email, created_at "
+                "FROM users ORDER BY created_at"
+            ).fetchall()
+        return [
+            {
+                "user_id": str(r[0]),
+                "username": r[1],
+                "full_name": r[2],
+                "email": r[3],
+                "created_at": r[4].isoformat(),
+            }
+            for r in rows
+        ]
+
+    def delete_user(self, user_id: str) -> None:
+        with self._pool.connection() as conn:
+            # auth_tokens cascade, so the removed account's sessions die with it
+            conn.execute("DELETE FROM users WHERE id = %s", (user_id,))
 
     def get_user_by_username(self, username: str) -> dict | None:
         with self._pool.connection() as conn:
@@ -1496,14 +1588,19 @@ class AuthRepository:
     def get_user_by_token(self, token_sha256: str) -> dict | None:
         with self._pool.connection() as conn:
             row = conn.execute(
-                "SELECT u.id, u.username FROM auth_tokens t "
+                "SELECT u.id, u.username, u.full_name, u.email FROM auth_tokens t "
                 "JOIN users u ON u.id = t.user_id "
                 "WHERE t.token_sha256 = %s AND t.expires_at > now()",
                 (token_sha256,),
             ).fetchone()
         if row is None:
             return None
-        return {"id": str(row[0]), "username": row[1]}
+        return {
+            "id": str(row[0]),
+            "username": row[1],
+            "full_name": row[2],
+            "email": row[3],
+        }
 
     def delete_token(self, token_sha256: str) -> None:
         with self._pool.connection() as conn:

@@ -59,6 +59,17 @@ def registry_rows(drawings: Drawings, project_id: str | None = None):
     return {"rows": drawings.registry_rows(project_id)}
 
 
+@router.get("/deleted")
+def deleted_rows(drawings: Drawings):
+    """The book's recycle bin: rows removed from the sheets but recoverable."""
+    return {"rows": drawings.list_deleted()}
+
+
+@router.post("/rows/{drawing_id}/restore")
+def restore_registry_row(drawing_id: str, drawings: Drawings):
+    return drawings.restore(drawing_id)
+
+
 @router.patch("/rows/{drawing_id}")
 def update_registry_row(drawing_id: str, body: RegistryRowUpdate, drawings: Drawings):
     return drawings.registry_update(drawing_id, body.model_dump(exclude_unset=True))

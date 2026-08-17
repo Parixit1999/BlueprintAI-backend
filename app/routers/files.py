@@ -72,6 +72,7 @@ def list_files(
     file_type: str | None = None,
     status: str | None = None,
     assigned: str | None = None,
+    drawing: str | None = None,
     dup_only: bool = False,
     sort: str = "uploaded",
     dir: str = "desc",
@@ -82,8 +83,8 @@ def list_files(
         return service.list_files()
     return service.list_files_paged(
         q=q, file_type=file_type, status=status, assigned=assigned,
-        dup_only=dup_only, sort=sort, direction=dir, page=page,
-        page_size=page_size,
+        drawing=drawing, dup_only=dup_only, sort=sort, direction=dir,
+        page=page, page_size=page_size,
     )
 
 

@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS drawings (
     version_group_id uuid,                   -- drawings sharing this id are versions of the same drawing
     version_note     text,
     source           text NOT NULL DEFAULT 'manual',  -- manual | book_import | upload
+    deleted_at       timestamptz,            -- soft delete: hidden from the book, restorable from the Deleted page
     created_at       timestamptz NOT NULL DEFAULT now()
 );
 
@@ -166,6 +167,8 @@ CREATE TABLE IF NOT EXISTS users (
     id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     username      text NOT NULL UNIQUE,
     password_hash text NOT NULL,
+    full_name     text,                     -- display name for the workspace
+    email         text,
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 

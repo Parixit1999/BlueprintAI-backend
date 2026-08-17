@@ -9,7 +9,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.db import pool
+from app.db import liveness_pool, pool
 from app.services import heartbeat, jobs
 from app.repositories import AuthRepository
 from app.services.auth_service import AuthFailed, AuthService
@@ -179,6 +179,7 @@ def _seed_first_user() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     pool.open()
+    liveness_pool.open()
     _ensure_files_schema()
     _reclaim_stale_work()
     _ensure_auth_schema()
@@ -187,6 +188,7 @@ async def lifespan(app: FastAPI):
     sweeper.start()
     yield
     _sweeper_stop.set()
+    liveness_pool.close()
     pool.close()
 
 

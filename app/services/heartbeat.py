@@ -11,7 +11,17 @@ heartbeating - while a dead worker's row frees in about 3 minutes.
 import logging
 import threading
 
+from app.db import liveness_pool
+
 logger = logging.getLogger(__name__)
+
+
+def _stamp(file_id: str) -> None:
+    # dedicated pool: a stamp can never wait behind extraction/ingest queries
+    with liveness_pool.connection() as conn:
+        conn.execute(
+            "UPDATE files SET last_heartbeat_at = now() WHERE id = %s", (file_id,)
+        )
 
 # Stamp cadence vs reclaim threshold: ~4 missed beats before a row is
 # declared dead, so one slow database write never kills a healthy job.
@@ -31,13 +41,13 @@ class Heartbeat:
     def _run(self) -> None:
         while not self._stop.wait(INTERVAL_SECONDS):
             try:
-                self._files.heartbeat(self._file_id)
+                _stamp(self._file_id)
             except Exception:  # a failed stamp must never kill the job
                 logger.warning("heartbeat write failed for %s", self._file_id)
 
     def __enter__(self) -> "Heartbeat":
         try:
-            self._files.heartbeat(self._file_id)  # immediate first stamp
+            _stamp(self._file_id)  # immediate first stamp
         except Exception:
             logger.warning("initial heartbeat failed for %s", self._file_id)
         self._thread.start()

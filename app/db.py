@@ -29,7 +29,21 @@ def _resolve_database_url() -> str:
 pool = ConnectionPool(
     _resolve_database_url(),
     min_size=1,
-    max_size=10,
+    # Sized for the whole process: API threads + extraction jobs + ingest
+    # jobs. 30 x 4 workers is well under RDS t4g.medium's connection budget.
+    max_size=30,
+    open=False,
+    kwargs={"autocommit": True},
+)
+
+# Tiny pool RESERVED for job liveness stamps. Heartbeats must never queue
+# behind embedding batches on the main pool: a starved heartbeat makes the
+# sweeper kill a healthy hours-long extraction (false positive we hit in
+# production during the first bulk ingest).
+liveness_pool = ConnectionPool(
+    _resolve_database_url(),
+    min_size=0,
+    max_size=2,
     open=False,
     kwargs={"autocommit": True},
 )

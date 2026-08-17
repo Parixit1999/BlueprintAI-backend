@@ -49,11 +49,11 @@ class FileService:
         clean = "".join(ch for ch in clean if ch.isprintable() and ch not in '\\/:*?"<>|')
         return clean[:200].strip() or "unnamed"
 
-    # Extraction concurrency cap: pages/files beyond this WAIT instead of
-    # competing for memory. Two heavy multi-page extractions already use
-    # 4 concurrent vision calls; a third joins the line. This is what turns
-    # "many simultaneous uploads" from an OOM risk into a short queue.
-    _extract_slots = threading.Semaphore(2)
+    # Extraction concurrency cap: documents beyond this WAIT instead of
+    # competing for memory and CPU. This is what turns "many simultaneous
+    # uploads" from an OOM risk into a short queue. Tune EXTRACT_CONCURRENCY
+    # together with the task's CPU size.
+    _extract_slots = threading.Semaphore(settings.extract_concurrency)
 
     def store_upload(self, filename: str, fileobj, folder_id: str | None = None) -> dict:
         """The FAST half of an upload: validate, persist the original to
@@ -91,6 +91,17 @@ class FileService:
             digest.update(block)
         fileobj.seek(0)
         content_sha256 = digest.hexdigest()
+
+        # Idempotent upload: byte-identical to a live document means this IS
+        # that document - return it instead of minting a duplicate. Makes
+        # re-dropping a whole folder safe (interrupted batches just resume);
+        # failed rows don't count so a genuine retry-by-reupload still works.
+        existing = self._files.find_by_sha(content_sha256)
+        if existing is not None:
+            return {
+                "file_id": existing["file_id"], "filename": existing["filename"],
+                "status": existing["status"], "existing": True,
+            }
 
         file_id = self._files.create(filename, suffix.lstrip("."), content_sha256, folder_id)
         s3_key = f"originals/{file_id}/{filename}"
@@ -290,6 +301,10 @@ class FileService:
         return self._files.list_paged(
             settings.duplicate_similarity_threshold, **kwargs
         )
+
+    def get_statuses(self, ids: list[str]) -> list[dict]:
+        """Batch polling for the upload page: one light query for N files."""
+        return self._files.get_statuses(ids)
 
     def get_extraction(self, file_id: str) -> dict | None:
         record = self._files.get(file_id)

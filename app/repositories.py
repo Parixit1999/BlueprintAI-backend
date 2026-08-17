@@ -153,6 +153,51 @@ class FileRepository:
             "auto_assigned": row[14],
         }
 
+    def find_by_sha(self, content_sha256: str) -> dict[str, Any] | None:
+        """Newest live (non-failed) document with these exact bytes."""
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT id, filename, status FROM files "
+                "WHERE content_sha256 = %s AND status <> 'failed' "
+                "ORDER BY created_at DESC LIMIT 1",
+                (content_sha256,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {"file_id": str(row[0]), "filename": row[1], "status": row[2]}
+
+    def get_statuses(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Light polling payload for many files at once: status and metadata
+        WITHOUT the extraction JSON (which can be megabytes per document).
+        One query regardless of batch size - built for the upload page's
+        single poller."""
+        if not ids:
+            return []
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """SELECT f.id, f.status, f.error, f.is_drawing, d.dwg_number,
+                          p.name, f.auto_assigned,
+                          COALESCE(jsonb_array_length(f.extraction), 0)
+                   FROM files f
+                   LEFT JOIN drawings d ON f.drawing_id = d.id
+                   LEFT JOIN projects p ON d.project_id = p.id
+                   WHERE f.id = ANY(%s)""",
+                (ids,),
+            ).fetchall()
+        return [
+            {
+                "file_id": str(r[0]),
+                "status": r[1],
+                "error": r[2],
+                "is_drawing": r[3],
+                "dwg_number": r[4],
+                "project_name": r[5],
+                "auto_assigned": r[6],
+                "region_count": r[7],
+            }
+            for r in rows
+        ]
+
     def list_render_keys(self, file_id: str) -> list[str]:
         """Every object-storage key produced for a file: the original plus any
         per-page renders. Used to clean up storage on delete."""

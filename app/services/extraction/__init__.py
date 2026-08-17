@@ -3,6 +3,15 @@
 To support a new format, add an extractor module and register it here -
 upload code and services stay untouched (open/closed).
 """
+from PIL import Image
+
+# PIL's decompression-bomb guard defaults to ~179 MP, which real wide-format
+# drawing scans exceed (an E-size sheet at 600 DPI is ~230 MP). Uploads come
+# from authenticated engineers and decode under the extraction concurrency
+# cap, so raise the ceiling rather than reject the archive's largest sheets.
+# 600 MP still stops genuinely hostile images (a 1 GP bomb never decodes).
+Image.MAX_IMAGE_PIXELS = 600_000_000
+
 from app.services.ai import get_text_generator, get_vision_provider
 from app.services.extraction.base import Extractor
 from app.services.extraction.dwg import DwgExtractor

@@ -1,12 +1,13 @@
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 
 from pydantic import BaseModel
 
 from app.db import pool
 from app.dependencies import drawing_service, file_service, render_service
+from app.services import jobs
 from app.repositories import DismissedDuplicateRepository
 from app.services.file_service import FileService
 from app.services.project_service import DrawingService
@@ -38,7 +39,6 @@ async def upload_file(
     file: UploadFile,
     service: Service,
     drawings: Drawings,
-    background: BackgroundTasks,
     folder_id: Annotated[str | None, Form()] = None,
 ):
     """Upload a drawing: the request only validates and stores the original
@@ -53,8 +53,9 @@ async def upload_file(
     # byte-identical re-upload: the document already exists (possibly already
     # extracted or ingested) - do not restart extraction over it
     if not stored.get("existing"):
-        background.add_task(
-            service.process_upload, stored["file_id"], drawings.suggest_and_maybe_assign
+        jobs.submit(
+            jobs.extract_pool, stored["file_id"],
+            service.process_upload, stored["file_id"], drawings.suggest_and_maybe_assign,
         )
     return stored
 
@@ -102,23 +103,24 @@ def get_render(file_id: str, renderer: Renderer, page: Annotated[int, Query(ge=1
 
 @router.post("/{file_id}/retry")
 def retry_extraction(
-    file_id: str, service: Service, drawings: Drawings, background: BackgroundTasks
+    file_id: str, service: Service, drawings: Drawings
 ):
     """Re-run extraction on a failed upload, in the background; poll status."""
     prepared = service.prepare_retry(file_id)
-    background.add_task(
-        service.process_upload, file_id, drawings.suggest_and_maybe_assign
+    jobs.submit(
+        jobs.extract_pool, file_id,
+        service.process_upload, file_id, drawings.suggest_and_maybe_assign,
     )
     return prepared
 
 
 @router.post("/{file_id}/reextract")
-def reextract(file_id: str, service: Service, background: BackgroundTasks):
+def reextract(file_id: str, service: Service):
     """Re-read an extracted/ingested document with the current pipeline, in
     the background. Drops its knowledge-base chunks now; the document shows
     as processing until the fresh regions land - poll status."""
     prepared = service.prepare_reextract(file_id)
-    background.add_task(service.process_upload, file_id, None)
+    jobs.submit(jobs.extract_pool, file_id, service.process_upload, file_id, None)
     return prepared
 
 

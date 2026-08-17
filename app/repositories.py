@@ -104,7 +104,8 @@ class FileRepository:
         double-inserting every chunk while the first run is still going."""
         with self._pool.connection() as conn:
             row = conn.execute(
-                "UPDATE files SET status = 'ingesting', processing_started_at = now() "
+                "UPDATE files SET status = 'ingesting', processing_started_at = now(), "
+                "last_heartbeat_at = now() "
                 "WHERE id = %s AND status = 'extracted' RETURNING id",
                 (file_id,),
             ).fetchone()
@@ -381,8 +382,9 @@ class FileRepository:
                 (similarity_threshold, *params, page_size, offset),
             ).fetchall()
             # cheap whole-archive facts for the page chrome
-            grand_total, pending_review = conn.execute(
-                "SELECT count(*), count(*) FILTER (WHERE status = 'extracted') FROM files"
+            grand_total, pending_review, failed_count = conn.execute(
+                "SELECT count(*), count(*) FILTER (WHERE status = 'extracted'), "
+                "count(*) FILTER (WHERE status = 'failed') FROM files"
             ).fetchone()
             types = [
                 r[0]
@@ -420,6 +422,7 @@ class FileRepository:
             "total": total,
             "grand_total": grand_total,
             "pending_review_count": pending_review,
+            "failed_count": failed_count,
             "duplicate_count": duplicate_count,
             "types": types,
             "page": page,

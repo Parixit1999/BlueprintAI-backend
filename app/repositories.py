@@ -1,6 +1,7 @@
 """Data access layer - the only place SQL lives."""
 import json
 import time
+from datetime import timedelta
 from typing import Any
 
 from psycopg_pool import ConnectionPool
@@ -1250,7 +1251,36 @@ class StatsRepository:
                    FROM projects p LEFT JOIN drawings d ON d.project_id = p.id
                    GROUP BY p.id ORDER BY drawings DESC, p.name LIMIT 8"""
             ).fetchall()
+            # daily activity for the dashboard trend: uploads and questions,
+            # last 14 calendar days (UTC), zero-filled client-agnostically here
+            uploads_by_day = dict(
+                conn.execute(
+                    """SELECT date_trunc('day', created_at)::date, count(*)
+                       FROM files
+                       WHERE created_at >= date_trunc('day', now()) - interval '13 days'
+                       GROUP BY 1"""
+                ).fetchall()
+            )
+            questions_by_day = dict(
+                conn.execute(
+                    """SELECT date_trunc('day', created_at)::date, count(*)
+                       FROM chat_messages
+                       WHERE role = 'user'
+                         AND created_at >= date_trunc('day', now()) - interval '13 days'
+                       GROUP BY 1"""
+                ).fetchall()
+            )
+            today = conn.execute("SELECT date_trunc('day', now())::date").fetchone()[0]
+        activity_daily = [
+            {
+                "date": (day := today - timedelta(days=13 - i)).isoformat(),
+                "uploads": uploads_by_day.get(day, 0),
+                "questions": questions_by_day.get(day, 0),
+            }
+            for i in range(14)
+        ]
         return {
+            "activity_daily": activity_daily,
             "documents_total": sum(files_by_status.values()),
             "documents_by_status": files_by_status,
             "documents_by_type": files_by_type,

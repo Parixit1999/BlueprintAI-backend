@@ -1,6 +1,7 @@
 """Data access layer - the only place SQL lives."""
 import json
 import time
+from datetime import timedelta
 from typing import Any
 
 from psycopg_pool import ConnectionPool
@@ -1236,6 +1237,18 @@ class StatsRepository:
             projects = conn.execute("SELECT count(*) FROM projects").fetchone()[0]
             drawings = conn.execute("SELECT count(*) FROM drawings").fetchone()[0]
             sets = conn.execute("SELECT count(*) FROM drawing_sets").fetchone()[0]
+            # sheet totals from the registry, plus how many drawings still
+            # have no count recorded (an actionable gap, not just a stat)
+            sheets_total, sheets_missing = conn.execute(
+                """SELECT coalesce(sum(sheet_count), 0),
+                          count(*) FILTER (WHERE sheet_count IS NULL)
+                   FROM drawings"""
+            ).fetchone()
+            # distinct document pages the extractor has actually read - the
+            # "how much of the archive has been processed" number
+            pages_extracted = conn.execute(
+                "SELECT count(DISTINCT (source_file_id, page)) FROM chunks"
+            ).fetchone()[0]
             unassigned = conn.execute(
                 "SELECT count(*) FROM files WHERE drawing_id IS NULL"
             ).fetchone()[0]
@@ -1250,7 +1263,36 @@ class StatsRepository:
                    FROM projects p LEFT JOIN drawings d ON d.project_id = p.id
                    GROUP BY p.id ORDER BY drawings DESC, p.name LIMIT 8"""
             ).fetchall()
+            # daily activity for the dashboard trend: uploads and questions,
+            # last 14 calendar days (UTC), zero-filled client-agnostically here
+            uploads_by_day = dict(
+                conn.execute(
+                    """SELECT date_trunc('day', created_at)::date, count(*)
+                       FROM files
+                       WHERE created_at >= date_trunc('day', now()) - interval '13 days'
+                       GROUP BY 1"""
+                ).fetchall()
+            )
+            questions_by_day = dict(
+                conn.execute(
+                    """SELECT date_trunc('day', created_at)::date, count(*)
+                       FROM chat_messages
+                       WHERE role = 'user'
+                         AND created_at >= date_trunc('day', now()) - interval '13 days'
+                       GROUP BY 1"""
+                ).fetchall()
+            )
+            today = conn.execute("SELECT date_trunc('day', now())::date").fetchone()[0]
+        activity_daily = [
+            {
+                "date": (day := today - timedelta(days=13 - i)).isoformat(),
+                "uploads": uploads_by_day.get(day, 0),
+                "questions": questions_by_day.get(day, 0),
+            }
+            for i in range(14)
+        ]
         return {
+            "activity_daily": activity_daily,
             "documents_total": sum(files_by_status.values()),
             "documents_by_status": files_by_status,
             "documents_by_type": files_by_type,
@@ -1263,6 +1305,9 @@ class StatsRepository:
             "projects_total": projects,
             "drawings_total": drawings,
             "sets_total": sets,
+            "sheets_total": sheets_total,
+            "sheets_missing": sheets_missing,
+            "pages_extracted": pages_extracted,
             "feedback_helpful": feedback.get(1, 0),
             "feedback_unhelpful": feedback.get(-1, 0),
             "drawings_per_project": [

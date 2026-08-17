@@ -3,6 +3,7 @@
 To support a new format, add an extractor module and register it here -
 upload code and services stay untouched (open/closed).
 """
+import pymupdf
 from PIL import Image
 
 # PIL's decompression-bomb guard defaults to ~179 MP, which real wide-format
@@ -19,6 +20,33 @@ from app.services.extraction.dxf import DxfExtractor
 from app.services.extraction.image import ImageExtractor
 from app.services.extraction.pdf import PdfExtractor
 from app.services.extraction.rvt import RvtExtractor
+
+_ONE_SHEET_IMAGES = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".heic", ".heif"}
+
+
+def document_page_count(path: str, suffix: str) -> int | None:
+    """How many sheets the stored document actually has, read from the
+    document itself.
+
+    Everything downstream used to infer this from the extracted regions
+    ("the highest page we produced a chunk for"). On a large set that is
+    wrong the moment extraction is capped: a 229-page plan set whose
+    extraction stopped at page 139 reported 139 sheets, rendered only 139,
+    and left the last 90 unreachable in the viewer.
+
+    Returns None for formats whose sheet count cannot be read cheaply here
+    (CAD), so the caller keeps its previous behaviour for those.
+    """
+    suffix = suffix.lower()
+    if suffix == ".pdf":
+        with pymupdf.open(path) as doc:
+            return doc.page_count or None
+    if suffix in (".tif", ".tiff"):
+        with Image.open(path) as im:  # scanned drawings are often multi-page
+            return getattr(im, "n_frames", 1) or 1
+    if suffix in _ONE_SHEET_IMAGES:
+        return 1
+    return None
 
 _FACTORIES = {
     # CAD text comes from entities (exact); the vision extractor adds what a

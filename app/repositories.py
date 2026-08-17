@@ -134,7 +134,7 @@ class FileRepository:
             row = conn.execute(
                 "SELECT f.id, f.filename, f.file_type, f.status, f.extraction, f.created_at, "
                 "f.s3_key, f.render, f.content_sha256, f.error, f.drawing_id, f.is_drawing, "
-                "d.dwg_number, p.name, f.auto_assigned "
+                "d.dwg_number, p.name, f.auto_assigned, f.page_count "
                 "FROM files f LEFT JOIN drawings d ON f.drawing_id = d.id "
                 "LEFT JOIN projects p ON d.project_id = p.id WHERE f.id = %s",
                 (file_id,),
@@ -157,7 +157,15 @@ class FileRepository:
             "dwg_number": row[12],
             "project_name": row[13],
             "auto_assigned": row[14],
+            # the document's real sheet count; None for older rows and CAD
+            "page_count": row[15],
         }
+
+    def set_page_count(self, file_id: str, page_count: int) -> None:
+        with self._pool.connection() as conn:
+            conn.execute(
+                "UPDATE files SET page_count = %s WHERE id = %s", (page_count, file_id)
+            )
 
     def find_by_sha(self, content_sha256: str) -> dict[str, Any] | None:
         """Newest document with these exact bytes; a live row wins over a
@@ -791,7 +799,9 @@ class DrawingRepository:
             rows = conn.execute(
                 f"""SELECT {', '.join('d.' + c for c in _DRAWING_COLS.split(', '))},
                            (SELECT count(*) FROM files f WHERE f.drawing_id = d.id),
-                           s.set_number, p.name
+                           s.set_number, p.name,
+                           (SELECT f.filename FROM files f WHERE f.drawing_id = d.id
+                             ORDER BY f.created_at LIMIT 1)
                     FROM drawings d
                     LEFT JOIN drawing_sets s ON d.set_id = s.id
                     LEFT JOIN projects p ON d.project_id = p.id
@@ -800,8 +810,11 @@ class DrawingRepository:
                 params,
             ).fetchall()
         return [
+            # filename is derived from the attached scan, not stored on the
+            # row: the book shows what the drawing actually came from, and it
+            # stays right when files are reassigned.
             {**_drawing_dict(r), "file_count": r[14], "set_number": r[15],
-             "project_name": r[16]}
+             "project_name": r[16], "filename": r[17]}
             for r in rows
         ]
 

@@ -202,7 +202,10 @@ class QueryService:
             label += f", project {h['project_name']}"
         return label
 
-    def _anchored_cards(self, question: str, already: list[dict]) -> list[dict]:
+    def _anchored_cards(
+        self, question: str, already: list[dict],
+        allowed_project_ids: list[str] | None = None,
+    ) -> list[dict]:
         """Identifier-anchored retrieval: a DWG number written in the question
         is an exact reference, so include those drawings' registry cards
         deterministically (every version in the group) instead of relying on
@@ -218,7 +221,15 @@ class QueryService:
             if d["dwg_number_norm"] in norms
         ]
         seen = {h["entity_id"] for h in already}
-        return [c for c in self._registry.get_by_entity(ids) if c["entity_id"] not in seen]
+        cards = [c for c in self._registry.get_by_entity(ids) if c["entity_id"] not in seen]
+        if allowed_project_ids is not None:
+            # role scope: anchored cards obey the same rule as searched ones -
+            # owned by an allowed sheet, or owned by no sheet at all
+            cards = [
+                c for c in cards
+                if c.get("project_id") is None or c["project_id"] in allowed_project_ids
+            ]
+        return cards
 
     @staticmethod
     def _registry_section(registry_extra: list[dict], start: int) -> str:
@@ -328,7 +339,10 @@ class QueryService:
             "multi_drawing": True,
         }
 
-    def _registry_answer(self, question: str, meta_hits: list[dict]) -> dict:
+    def _registry_answer(
+        self, question: str, meta_hits: list[dict],
+        allowed_project_ids: list[str] | None = None,
+    ) -> dict:
         """Answer from registry metadata cards (projects, drawings, sets,
         versions) when they match the question better than any file content."""
         top = meta_hits[0]["score"]
@@ -338,7 +352,7 @@ class QueryService:
         # thousands-of-cards scale, embeddings cannot tell 10951-W-20 from
         # 10551-W-25 - anchored cards are deterministic, so they LEAD and
         # are never crowded out by the semantic pool.
-        anchored = self._anchored_cards(question, hits)
+        anchored = self._anchored_cards(question, hits, allowed_project_ids)
         if anchored:
             hits = (anchored + hits)[: max(MAX_EVIDENCE, len(anchored))]
         context = "\n\n".join(
@@ -392,10 +406,12 @@ class QueryService:
         project_id: str | None = None,
         history: list[dict] | None = None,
         file_id: str | None = None,
+        allowed_project_ids: list[str] | None = None,
     ) -> dict:
         """Answer a question in one shot: plan (retrieve + build the prompt),
         then generate. Streaming callers use plan() + stream() instead."""
-        result = self.plan(question, top_k, project_id, history, file_id)
+        result = self.plan(question, top_k, project_id, history, file_id,
+                           allowed_project_ids)
         prompt = result.pop("prompt", None)
         image = result.pop("image", None)
         if result["answer"] is None and prompt:
@@ -442,6 +458,7 @@ class QueryService:
         project_id: str | None = None,
         history: list[dict] | None = None,
         file_id: str | None = None,
+        allowed_project_ids: list[str] | None = None,
     ) -> dict:
         """Everything except generation: retrieve over the ingested drawings
         AND the registry metadata (projects, drawing metadata, sets, versions,
@@ -453,11 +470,15 @@ class QueryService:
         conversation context."""
         search_question = self._contextualize(question, history) if history else question
         q_embedding = self._embedder.embed(search_question)
-        candidates = self._chunks.search(q_embedding, CANDIDATE_POOL, project_id, file_id)
+        candidates = self._chunks.search(
+            q_embedding, CANDIDATE_POOL, project_id, file_id,
+            allowed_project_ids=allowed_project_ids,
+        )
         # file-scoped chat is about ONE document; other entities' registry
         # cards are noise (identifier-anchored cards still apply below)
         meta_hits = (
-            self._registry.search(q_embedding, REGISTRY_POOL, project_id)
+            self._registry.search(q_embedding, REGISTRY_POOL, project_id,
+                                  allowed_project_ids=allowed_project_ids)
             if self._registry is not None and file_id is None
             else []
         )
@@ -474,9 +495,15 @@ class QueryService:
             )
             if prev_user:
                 carry_embedding = self._embedder.embed(f"{prev_user}\n{question}")
-                candidates = self._chunks.search(carry_embedding, CANDIDATE_POOL, project_id, file_id)
+                candidates = self._chunks.search(
+                    carry_embedding, CANDIDATE_POOL, project_id, file_id,
+                    allowed_project_ids=allowed_project_ids,
+                )
                 if self._registry is not None and file_id is None:
-                    meta_hits = self._registry.search(carry_embedding, REGISTRY_POOL, project_id)
+                    meta_hits = self._registry.search(
+                        carry_embedding, REGISTRY_POOL, project_id,
+                        allowed_project_ids=allowed_project_ids,
+                    )
                 top_score = candidates[0]["score"] if candidates else 0.0
                 top_meta = meta_hits[0]["score"] if meta_hits else 0.0
 
@@ -489,7 +516,9 @@ class QueryService:
             else ""
         )
         if top_meta >= MIN_RELEVANCE and top_meta >= top_score + REGISTRY_MARGIN:
-            return self._registry_answer(convo_prefix + question, meta_hits)
+            return self._registry_answer(
+                convo_prefix + question, meta_hits, allowed_project_ids
+            )
         if top_score < MIN_RELEVANCE and file_id and candidates:
             # scoped to one document the intent is unambiguous - answer from
             # its best regions (the summary embeds close to almost anything)
@@ -508,7 +537,8 @@ class QueryService:
         # versions" phrasings get complete answers.
         registry_extra = [h for h in meta_hits if h["score"] >= MIN_RELEVANCE]
         registry_extra = (
-            self._anchored_cards(search_question, registry_extra) + registry_extra
+            self._anchored_cards(search_question, registry_extra, allowed_project_ids)
+            + registry_extra
         )[:3]
 
         # Group candidates by the drawing (or file, when unassigned) they belong

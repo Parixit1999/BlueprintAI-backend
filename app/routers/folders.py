@@ -1,8 +1,11 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Request, Query
 from pydantic import BaseModel, Field
 
+from app import authz
+from app.db import pool
+from app.repositories import FileRepository
 from app.dependencies import folder_service
 from app.services.folder_service import FolderService
 
@@ -67,10 +70,12 @@ def delete_folder(folder_id: str, service: Service):
 
 
 @router.patch("/files/{file_id}/name")
-def rename_file(file_id: str, body: FileRename, service: Service):
+def rename_file(request: Request, file_id: str, body: FileRename, service: Service):
+    authz.check_file(request.state.user, FileRepository(pool).project_of, file_id)
     return service.rename_file(file_id, body.filename)
 
 
 @router.post("/files/{file_id}/move")
-def move_file(file_id: str, body: FileMove, service: Service):
+def move_file(request: Request, file_id: str, body: FileMove, service: Service):
+    authz.check_file(request.state.user, FileRepository(pool).project_of, file_id)
     return service.move_file(file_id, body.folder_id)

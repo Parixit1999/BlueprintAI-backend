@@ -91,7 +91,7 @@ class ChatService:
 
     def ask(
         self, session_id: str, question: str, project_id: str | None = None,
-        file_id: str | None = None,
+        file_id: str | None = None, allowed_project_ids: list[str] | None = None,
     ) -> dict:
         session = self._chats.get_session(session_id, self._user_id)
         if session is None:
@@ -101,7 +101,10 @@ class ChatService:
         # the conversation exactly as the user did when asking
         history = self._chats.list_messages(session_id)
         user_msg = self._chats.add_message(session_id, "user", question)
-        result = self._query.ask(question, project_id=project_id, history=history, file_id=file_id)
+        result = self._query.ask(
+            question, project_id=project_id, history=history, file_id=file_id,
+            allowed_project_ids=allowed_project_ids,
+        )
         assistant_msg = self._chats.add_message(
             session_id, "assistant", result["answer"], result["evidence"],
             result.get("version_context"),
@@ -117,7 +120,7 @@ class ChatService:
 
     def ask_stream(
         self, session_id: str, question: str, project_id: str | None = None,
-        file_id: str | None = None,
+        file_id: str | None = None, allowed_project_ids: list[str] | None = None,
     ):
         """Streaming variant of ask(): yields (event, data) tuples.
 
@@ -133,7 +136,10 @@ class ChatService:
 
         history = self._chats.list_messages(session_id)
         user_msg = self._chats.add_message(session_id, "user", question)
-        plan = self._query.plan(question, project_id=project_id, history=history, file_id=file_id)
+        plan = self._query.plan(
+            question, project_id=project_id, history=history, file_id=file_id,
+            allowed_project_ids=allowed_project_ids,
+        )
         image = plan.pop("image", None)
         yield "meta", {
             "user_message": user_msg,

@@ -161,6 +161,19 @@ class FileRepository:
             "page_count": row[15],
         }
 
+    def project_of(self, file_id: str) -> tuple[str | None, str | None] | None:
+        """(project_id, drawing_id) for one file - the ownership fact the
+        per-document role check needs. None when the file doesn't exist."""
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT d.project_id, f.drawing_id FROM files f "
+                "LEFT JOIN drawings d ON d.id = f.drawing_id WHERE f.id = %s",
+                (file_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return (str(row[0]) if row[0] else None, str(row[1]) if row[1] else None)
+
     def set_page_count(self, file_id: str, page_count: int) -> None:
         with self._pool.connection() as conn:
             conn.execute(
@@ -334,6 +347,7 @@ class FileRepository:
         direction: str = "desc",
         page: int = 1,
         page_size: int = 10,
+        allowed_project_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """Server-side paged listing: filters, sorting, and LIMIT/OFFSET run
         in SQL, so listing cost is bound by the page size, not the archive -
@@ -371,6 +385,12 @@ class FileRepository:
             where.append("f.is_drawing IS TRUE")
         elif drawing == "no":
             where.append("f.is_drawing IS FALSE")
+        if allowed_project_ids is not None:
+            # role-scoped: documents on the caller's sheets, plus unassigned
+            # uploads (which belong to no sheet - hiding them would make a
+            # user's own uploads vanish until someone files them)
+            where.append("(d.project_id = ANY(%s::uuid[]) OR f.drawing_id IS NULL)")
+            params.append(allowed_project_ids)
         dup_exists = (
             """EXISTS (
                  SELECT 1 FROM files o
@@ -734,7 +754,7 @@ class DrawingRepository:
                 "UPDATE drawings SET deleted_at = NULL WHERE id = %s", (drawing_id,)
             )
 
-    def list_deleted(self) -> list[dict[str, Any]]:
+    def list_deleted(self, allowed: list[str] | None = None) -> list[dict[str, Any]]:
         """The recycle bin behind the book, newest deletion first."""
         with self._pool.connection() as conn:
             rows = conn.execute(
@@ -745,7 +765,9 @@ class DrawingRepository:
                     LEFT JOIN drawing_sets s ON d.set_id = s.id
                     LEFT JOIN projects p ON d.project_id = p.id
                     WHERE d.deleted_at IS NOT NULL
-                    ORDER BY d.deleted_at DESC"""
+                      AND (%s::uuid[] IS NULL OR d.project_id = ANY(%s::uuid[]))
+                    ORDER BY d.deleted_at DESC""",
+                (allowed, allowed),
             ).fetchall()
         return [
             {**_drawing_dict(r), "file_count": r[14], "set_number": r[15],
@@ -783,7 +805,9 @@ class DrawingRepository:
             {**_drawing_dict(r), "file_count": r[14], "set_number": r[15]} for r in rows
         ]
 
-    def list_registry(self, project_id: str | None) -> list[dict[str, Any]]:
+    def list_registry(
+        self, project_id: str | None, allowed: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         """Registry rows for the spreadsheet view: all drawings (Main Book)
         or one project's drawings, with set number, project name, and file
         count joined in. The book is thousands of rows, not millions - one
@@ -794,7 +818,11 @@ class DrawingRepository:
             if project_id
             else "WHERE d.deleted_at IS NULL"
         )
-        params = (project_id,) if project_id else ()
+        params: tuple = (project_id,) if project_id else ()
+        if allowed is not None:
+            # role-scoped: only rows owned by the caller's sheets
+            where += " AND d.project_id = ANY(%s::uuid[])"
+            params += (allowed,)
         with self._pool.connection() as conn:
             rows = conn.execute(
                 f"""SELECT {', '.join('d.' + c for c in _DRAWING_COLS.split(', '))},
@@ -829,6 +857,14 @@ class DrawingRepository:
             return conn.execute(
                 "SELECT count(*) FROM drawings WHERE deleted_at IS NOT NULL"
             ).fetchone()[0]
+
+    def set_project(self, set_id: str) -> str | None:
+        """The owning project of a drawing set (None = unowned or missing)."""
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT project_id FROM drawing_sets WHERE id = %s", (set_id,)
+            ).fetchone()
+        return str(row[0]) if row and row[0] else None
 
     def find_set(self, project_id: str | None, set_number: str) -> dict[str, Any] | None:
         with self._pool.connection() as conn:
@@ -1043,7 +1079,8 @@ class RegistryChunkRepository:
             )
 
     def search(
-        self, embedding: list[float], top_k: int, project_id: str | None = None
+        self, embedding: list[float], top_k: int, project_id: str | None = None,
+        allowed_project_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         vector = json.dumps(embedding)
         # Same two-stage shape as chunk search: index-served distance pool,
@@ -1057,13 +1094,18 @@ class RegistryChunkRepository:
                        SELECT entity_type, entity_id, project_id, label, project_name, chunk_text,
                               (1 - (embedding <=> %s::vector)) * feedback_weight AS score
                        FROM registry_chunks
-                       WHERE %s::uuid IS NULL OR project_id = %s::uuid
+                       WHERE (%s::uuid IS NULL OR project_id = %s::uuid)
+                         AND (%s::uuid[] IS NULL
+                              OR project_id = ANY(%s::uuid[])
+                              OR project_id IS NULL)
                        ORDER BY embedding <=> %s::vector
                        LIMIT %s
                    ) candidates
                    ORDER BY score DESC
                    LIMIT %s""",
-                (vector, project_id, project_id, vector, pool_size, top_k),
+                (vector, project_id, project_id,
+                 allowed_project_ids, allowed_project_ids,
+                 vector, pool_size, top_k),
             ).fetchall()
         return [
             {
@@ -1286,7 +1328,7 @@ class StatsRepository:
     def __init__(self, pool: ConnectionPool):
         self._pool = pool
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, allowed_project_ids: list[str] | None = None) -> dict[str, Any]:
         with self._pool.connection() as conn:
             files_by_status = dict(
                 conn.execute("SELECT status, count(*) FROM files GROUP BY status").fetchall()
@@ -1336,7 +1378,9 @@ class StatsRepository:
                    FROM projects p
                         LEFT JOIN drawings d
                           ON d.project_id = p.id AND d.deleted_at IS NULL
-                   GROUP BY p.id ORDER BY drawings DESC, p.name LIMIT 8"""
+                   WHERE %s::uuid[] IS NULL OR p.id = ANY(%s::uuid[])
+                   GROUP BY p.id ORDER BY drawings DESC, p.name LIMIT 8""",
+                (allowed_project_ids, allowed_project_ids),
             ).fetchall()
             # daily activity for the dashboard trend: uploads and questions,
             # last 14 calendar days (UTC), zero-filled client-agnostically here
@@ -1447,12 +1491,14 @@ class ChunkRepository:
 
     def search(
         self, embedding: list[float], top_k: int, project_id: str | None = None,
-        file_id: str | None = None,
+        file_id: str | None = None, allowed_project_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Vector search over ingested regions. Optionally scoped to one
         project (via the file -> drawing -> project chain) or to one document
         (file-scoped chat); results carry the drawing/project context so
-        evidence can show where a region lives."""
+        evidence can show where a region lives. allowed_project_ids is the
+        caller's ROLE scope: content on other sheets never enters the pool
+        (unassigned content, owned by no sheet, stays retrievable)."""
         vector = json.dumps(embedding)
         # Two-stage retrieval so the HNSW index can serve the search: the
         # inner query fetches a candidate pool ordered by PURE distance (the
@@ -1480,12 +1526,16 @@ class ChunkRepository:
                             LEFT JOIN drawing_sets s ON d.set_id = s.id
                        WHERE (%s::uuid IS NULL OR d.project_id = %s::uuid)
                          AND (%s::uuid IS NULL OR c.source_file_id = %s::uuid)
+                         AND (%s::uuid[] IS NULL
+                              OR d.project_id = ANY(%s::uuid[])
+                              OR f.drawing_id IS NULL)
                        ORDER BY c.embedding <=> %s::vector
                        LIMIT %s
                    ) candidates
                    ORDER BY score DESC
                    LIMIT %s""",
-                (vector, project_id, project_id, file_id, file_id, vector,
+                (vector, project_id, project_id, file_id, file_id,
+                 allowed_project_ids, allowed_project_ids, vector,
                  pool_size, top_k),
             ).fetchall()
         return [
@@ -1529,12 +1579,14 @@ class AuthRepository:
         password_hash: str,
         full_name: str | None = None,
         email: str | None = None,
+        role_id: str | None = None,
+        is_admin: bool = False,
     ) -> str:
         with self._pool.connection() as conn:
             row = conn.execute(
-                "INSERT INTO users (username, password_hash, full_name, email) "
-                "VALUES (%s, %s, %s, %s) RETURNING id",
-                (username.strip().lower(), password_hash, full_name, email),
+                "INSERT INTO users (username, password_hash, full_name, email, role_id, is_admin) "
+                "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                (username.strip().lower(), password_hash, full_name, email, role_id, is_admin),
             ).fetchone()
         return str(row[0])
 
@@ -1542,8 +1594,10 @@ class AuthRepository:
         """Everyone with an account, for the Users page. Never returns hashes."""
         with self._pool.connection() as conn:
             rows = conn.execute(
-                "SELECT id, username, full_name, email, created_at "
-                "FROM users ORDER BY created_at"
+                "SELECT u.id, u.username, u.full_name, u.email, u.created_at, "
+                "u.is_admin, u.role_id, r.name "
+                "FROM users u LEFT JOIN roles r ON r.id = u.role_id "
+                "ORDER BY u.created_at"
             ).fetchall()
         return [
             {
@@ -1552,6 +1606,9 @@ class AuthRepository:
                 "full_name": r[2],
                 "email": r[3],
                 "created_at": r[4].isoformat(),
+                "is_admin": r[5],
+                "role_id": str(r[6]) if r[6] else None,
+                "role_name": r[7],
             }
             for r in rows
         ]
@@ -1574,12 +1631,17 @@ class AuthRepository:
     def get_user_by_id(self, user_id: str) -> dict | None:
         with self._pool.connection() as conn:
             row = conn.execute(
-                "SELECT id, username, password_hash FROM users WHERE id = %s",
+                "SELECT id, username, password_hash, is_admin FROM users WHERE id = %s",
                 (user_id,),
             ).fetchone()
         if row is None:
             return None
-        return {"id": str(row[0]), "username": row[1], "password_hash": row[2]}
+        return {
+            "id": str(row[0]),
+            "username": row[1],
+            "password_hash": row[2],
+            "is_admin": row[3],
+        }
 
     def set_password_hash(self, user_id: str, password_hash: str) -> None:
         with self._pool.connection() as conn:
@@ -1599,10 +1661,18 @@ class AuthRepository:
             conn.execute("DELETE FROM auth_tokens WHERE expires_at < now()")
 
     def get_user_by_token(self, token_sha256: str) -> dict | None:
+        """The per-request identity, role included. Joining the role here
+        (rather than caching it in the token) means editing a role takes
+        effect on every holder's NEXT request - no re-login required."""
         with self._pool.connection() as conn:
             row = conn.execute(
-                "SELECT u.id, u.username, u.full_name, u.email FROM auth_tokens t "
+                "SELECT u.id, u.username, u.full_name, u.email, u.is_admin, "
+                "r.id, r.name, r.pages, r.all_sheets, "
+                "(SELECT array_agg(rp.project_id::text) FROM role_projects rp "
+                " WHERE rp.role_id = r.id) "
+                "FROM auth_tokens t "
                 "JOIN users u ON u.id = t.user_id "
+                "LEFT JOIN roles r ON r.id = u.role_id "
                 "WHERE t.token_sha256 = %s AND t.expires_at > now()",
                 (token_sha256,),
             ).fetchone()
@@ -1613,7 +1683,111 @@ class AuthRepository:
             "username": row[1],
             "full_name": row[2],
             "email": row[3],
+            "is_admin": row[4],
+            "role": None if row[5] is None else {
+                "id": str(row[5]),
+                "name": row[6],
+                "pages": list(row[7] or []),
+                "all_sheets": row[8],
+                "project_ids": list(row[9] or []),
+            },
         }
+
+    # --- roles ---
+
+    def list_roles(self) -> list[dict]:
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT r.id, r.name, r.pages, r.all_sheets, r.created_at, "
+                "(SELECT count(*) FROM users u WHERE u.role_id = r.id), "
+                "(SELECT array_agg(rp.project_id::text) FROM role_projects rp "
+                " WHERE rp.role_id = r.id) "
+                "FROM roles r ORDER BY r.created_at"
+            ).fetchall()
+        return [
+            {
+                "role_id": str(r[0]),
+                "name": r[1],
+                "pages": list(r[2] or []),
+                "all_sheets": r[3],
+                "created_at": r[4].isoformat(),
+                "user_count": r[5],
+                "project_ids": list(r[6] or []),
+            }
+            for r in rows
+        ]
+
+    def get_role_by_name(self, name: str) -> dict | None:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT id, name FROM roles WHERE lower(name) = lower(%s)", (name,)
+            ).fetchone()
+        return None if row is None else {"role_id": str(row[0]), "name": row[1]}
+
+    def create_role(
+        self, name: str, pages: list[str], all_sheets: bool, project_ids: list[str]
+    ) -> str:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "INSERT INTO roles (name, pages, all_sheets) VALUES (%s, %s, %s) RETURNING id",
+                (name, pages, all_sheets),
+            ).fetchone()
+            role_id = str(row[0])
+            for pid in project_ids:
+                conn.execute(
+                    "INSERT INTO role_projects (role_id, project_id) VALUES (%s, %s) "
+                    "ON CONFLICT DO NOTHING",
+                    (role_id, pid),
+                )
+        return role_id
+
+    def update_role(
+        self,
+        role_id: str,
+        name: str,
+        pages: list[str],
+        all_sheets: bool,
+        project_ids: list[str],
+    ) -> None:
+        with self._pool.connection() as conn:
+            conn.execute(
+                "UPDATE roles SET name = %s, pages = %s, all_sheets = %s WHERE id = %s",
+                (name, pages, all_sheets, role_id),
+            )
+            # replace the sheet list wholesale - it is tiny and explicit
+            conn.execute("DELETE FROM role_projects WHERE role_id = %s", (role_id,))
+            for pid in project_ids:
+                conn.execute(
+                    "INSERT INTO role_projects (role_id, project_id) VALUES (%s, %s) "
+                    "ON CONFLICT DO NOTHING",
+                    (role_id, pid),
+                )
+
+    def delete_role(self, role_id: str) -> None:
+        # users.role_id has ON DELETE SET NULL: holders become roleless and
+        # lose access on their next request - the caller warns about this
+        with self._pool.connection() as conn:
+            conn.execute("DELETE FROM roles WHERE id = %s", (role_id,))
+
+    def update_user(
+        self, user_id: str, role_id: str | None = ..., is_admin: bool | None = None
+    ) -> None:
+        sets, params = [], []
+        if role_id is not ...:
+            sets.append("role_id = %s")
+            params.append(role_id)
+        if is_admin is not None:
+            sets.append("is_admin = %s")
+            params.append(is_admin)
+        if not sets:
+            return
+        params.append(user_id)
+        with self._pool.connection() as conn:
+            conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE id = %s", params)
+
+    def count_admins(self) -> int:
+        with self._pool.connection() as conn:
+            return conn.execute("SELECT count(*) FROM users WHERE is_admin").fetchone()[0]
 
     def delete_token(self, token_sha256: str) -> None:
         with self._pool.connection() as conn:

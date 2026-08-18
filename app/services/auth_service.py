@@ -82,7 +82,7 @@ class AuthService:
             user_id, except_sha=self._hash_token(keep_token) if keep_token else None
         )
 
-    # --- account management (single shared workspace, no roles) ---
+    # --- account management (admin-gated by the middleware) ---
 
     def list_users(self) -> list[dict]:
         return self._repo.list_users()
@@ -93,6 +93,7 @@ class AuthService:
         password: str,
         full_name: str | None = None,
         email: str | None = None,
+        role_id: str | None = None,
     ) -> dict:
         """Add a teammate. Validation mirrors change_password so a new account
         can never be weaker than an existing one."""
@@ -110,20 +111,89 @@ class AuthService:
             bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode(),
             (full_name or "").strip() or None,
             (email or "").strip().lower() or None,
+            role_id=role_id or None,
         )
         return {
             "user_id": user_id,
             "username": username,
             "full_name": (full_name or "").strip() or None,
             "email": (email or "").strip().lower() or None,
+            "role_id": role_id or None,
         }
 
     def delete_user(self, user_id: str, acting_user_id: str) -> None:
         if user_id == acting_user_id:
             raise UserRejected("You cannot remove your own account.")
-        if self._repo.get_user_by_id(user_id) is None:
+        target = self._repo.get_user_by_id(user_id)
+        if target is None:
             raise UserRejected("That account no longer exists.")
+        if target.get("is_admin") and self._repo.count_admins() <= 1:
+            raise UserRejected("You can't remove the last administrator.")
         self._repo.delete_user(user_id)
+
+    # --- roles ---
+
+    def list_roles(self) -> list[dict]:
+        return self._repo.list_roles()
+
+    def _validate_role(
+        self, name: str, pages: list[str], all_sheets: bool, project_ids: list[str],
+        existing_role_id: str | None = None,
+    ) -> tuple[str, list[str], bool, list[str]]:
+        from app.authz import PAGES
+
+        name = (name or "").strip()
+        if not name:
+            raise UserRejected("The role needs a name.")
+        pages = [p for p in dict.fromkeys(pages or [])]
+        bad = [p for p in pages if p not in PAGES]
+        if bad:
+            raise UserRejected(f"Unknown page: {bad[0]}.")
+        clash = self._repo.get_role_by_name(name)
+        if clash and clash["role_id"] != existing_role_id:
+            raise UserRejected(f"A role named \u201c{name}\u201d already exists.")
+        # all_sheets makes an explicit list redundant; an empty list with
+        # all_sheets off is legal (the role sees only unassigned content)
+        project_ids = [] if all_sheets else [p for p in dict.fromkeys(project_ids or [])]
+        return name, pages, bool(all_sheets), project_ids
+
+    def create_role(
+        self, name: str, pages: list[str], all_sheets: bool, project_ids: list[str]
+    ) -> dict:
+        name, pages, all_sheets, project_ids = self._validate_role(
+            name, pages, all_sheets, project_ids
+        )
+        role_id = self._repo.create_role(name, pages, all_sheets, project_ids)
+        return {"role_id": role_id, "name": name, "pages": pages,
+                "all_sheets": all_sheets, "project_ids": project_ids}
+
+    def update_role(
+        self, role_id: str, name: str, pages: list[str], all_sheets: bool,
+        project_ids: list[str],
+    ) -> dict:
+        name, pages, all_sheets, project_ids = self._validate_role(
+            name, pages, all_sheets, project_ids, existing_role_id=role_id
+        )
+        self._repo.update_role(role_id, name, pages, all_sheets, project_ids)
+        return {"role_id": role_id, "name": name, "pages": pages,
+                "all_sheets": all_sheets, "project_ids": project_ids}
+
+    def delete_role(self, role_id: str) -> None:
+        self._repo.delete_role(role_id)
+
+    def update_user(
+        self, user_id: str, role_id: str | None = ..., is_admin: bool | None = None
+    ) -> None:
+        target = self._repo.get_user_by_id(user_id)
+        if target is None:
+            raise UserRejected("That account no longer exists.")
+        if (
+            is_admin is False
+            and target.get("is_admin")
+            and self._repo.count_admins() <= 1
+        ):
+            raise UserRejected("You can't demote the last administrator.")
+        self._repo.update_user(user_id, role_id=role_id, is_admin=is_admin)
 
     def ensure_seed_user(self, username: str, password: str | None) -> str | None:
         """Create the first account when no users exist. Returns the
@@ -136,6 +206,8 @@ class AuthService:
             generated = secrets.token_urlsafe(12)
             password = generated
         self._repo.create_user(
-            username, bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+            username,
+            bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode(),
+            is_admin=True,  # the first account administers the workspace
         )
         return generated

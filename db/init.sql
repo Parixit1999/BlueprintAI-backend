@@ -163,12 +163,31 @@ CREATE TABLE IF NOT EXISTS answer_feedback (
 -- Authentication: simple username/password accounts with server-side
 -- session tokens (revocable, expiring). Passwords are bcrypt-hashed;
 -- tokens are stored as sha256 digests so a database leak exposes neither.
+-- A role names a set of PAGES (dashboard/numberbook/chat/upload/documents)
+-- plus Number Book sheet access: every sheet, or the projects listed in
+-- role_projects. Users carry one role; admins bypass roles entirely.
+CREATE TABLE IF NOT EXISTS roles (
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name       text NOT NULL UNIQUE,
+    pages      text[] NOT NULL DEFAULT '{}',
+    all_sheets boolean NOT NULL DEFAULT false,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS role_projects (
+    role_id    uuid NOT NULL REFERENCES roles(id)    ON DELETE CASCADE,
+    project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    PRIMARY KEY (role_id, project_id)
+);
+
 CREATE TABLE IF NOT EXISTS users (
     id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     username      text NOT NULL UNIQUE,
     password_hash text NOT NULL,
     full_name     text,                     -- display name for the workspace
     email         text,
+    role_id       uuid REFERENCES roles(id) ON DELETE SET NULL,
+    is_admin      boolean NOT NULL DEFAULT false,
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 

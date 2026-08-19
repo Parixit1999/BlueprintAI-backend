@@ -170,8 +170,8 @@ class DrawingService:
             self._index.index_project(drawing["project_id"])
         return self.get_detail(drawing_id)
 
-    def list_deleted(self) -> list[dict]:
-        return self._drawings.list_deleted()
+    def list_deleted(self, allowed: list[str] | None = None) -> list[dict]:
+        return self._drawings.list_deleted(allowed)
 
     def link_versions(self, drawing_id: str, other_drawing_id: str) -> dict:
         """Declare two drawings as versions of the same drawing."""
@@ -199,8 +199,23 @@ class DrawingService:
 
     # --- registry (spreadsheet) view ---
 
-    def registry_rows(self, project_id: str | None) -> list[dict]:
-        return self._drawings.list_registry(project_id)
+    def project_of_drawing(self, drawing_id: str) -> str | None:
+        """The owning project of a drawing (None = Main-Book only), for the
+        per-row role check. Missing drawings surface as FileNotFound at the
+        call sites that fetch details."""
+        drawing = self._drawings.get(drawing_id)
+        return drawing.get("project_id") if drawing else None
+
+    def project_of_set(self, set_id: str) -> str | None:
+        """The owning project of a set, for the per-set role check."""
+        return self._drawings.set_project(set_id)
+
+    def file_project_of(self, file_id: str):
+        """(project_id, drawing_id) for a file, for the per-document check."""
+        return self._files.project_of(file_id)
+
+    def registry_rows(self, project_id: str | None, allowed: list[str] | None = None) -> list[dict]:
+        return self._drawings.list_registry(project_id, allowed)
 
     def registry_count(self) -> int:
         return self._drawings.count_all()

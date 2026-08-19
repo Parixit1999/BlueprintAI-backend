@@ -39,3 +39,9 @@ class AlreadyIngested(BlueprintError):
 
 class RenderFailed(BlueprintError):
     pass
+
+
+class Forbidden(BlueprintError):
+    """The signed-in user's role does not permit this (mapped to 403).
+    Deliberately not AuthFailed: 401 signs the user out client-side, while
+    403 surfaces as an ordinary explanatory toast."""

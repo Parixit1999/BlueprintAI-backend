@@ -19,15 +19,18 @@ from app.exceptions import (
     ExtractionFailed,
     FileNotFound,
     FileTooLarge,
+    Forbidden,
     InvalidFile,
     RenderFailed,
     UnsupportedFileType,
     VisionUnavailable,
 )
+from app import authz
 from app.routers import auth, chats, drawings, files, folders, projects, query, registry, review, stats
 
 _ERROR_STATUS: list[tuple[type[BlueprintError], int]] = [
     (AuthFailed, 401),
+    (Forbidden, 403),
     (UnsupportedFileType, 422),
     (InvalidFile, 422),
     (ExtractionFailed, 422),
@@ -176,6 +179,44 @@ def _ensure_auth_schema() -> None:
                    PRIMARY KEY (file_id, other_file_id)
                )"""
         )
+        # --- role-based access ---
+        # a role names a set of PAGES plus Number Book sheet access (all
+        # sheets, or the projects listed in role_projects); users carry one
+        # role, and admins bypass roles entirely
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS roles (
+                   id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+                   name       text NOT NULL UNIQUE,
+                   pages      text[] NOT NULL DEFAULT '{}',
+                   all_sheets boolean NOT NULL DEFAULT false,
+                   created_at timestamptz NOT NULL DEFAULT now()
+               )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS role_projects (
+                   role_id    uuid NOT NULL REFERENCES roles(id)    ON DELETE CASCADE,
+                   project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                   PRIMARY KEY (role_id, project_id)
+               )"""
+        )
+        # one switch per role: editors change things, viewers only look
+        conn.execute(
+            "ALTER TABLE roles ADD COLUMN IF NOT EXISTS can_edit boolean NOT NULL DEFAULT true"
+        )
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS role_id uuid REFERENCES roles(id) ON DELETE SET NULL"
+        )
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin boolean NOT NULL DEFAULT false"
+        )
+        # one-time promotion of the seeded account. Guarded: these patches
+        # run on every boot, and re-promoting a deliberately demoted 'admin'
+        # would silently undo an administrative decision.
+        conn.execute(
+            "UPDATE users SET is_admin = true "
+            "WHERE username = 'admin' "
+            "AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin)"
+        )
 
 
 def _seed_first_user() -> None:
@@ -255,6 +296,11 @@ async def require_auth(request: Request, call_next):
             status_code=401, content={"detail": "Please sign in to continue."}
         )
     request.state.user = user
+    # Page gate: the role must include the feature this URL belongs to.
+    # 403, never 401 - the frontend treats 401 as an expired session.
+    denial = authz.check_page(user, request.method, request.url.path)
+    if denial:
+        return JSONResponse(status_code=403, content={"detail": denial})
     return await call_next(request)
 
 

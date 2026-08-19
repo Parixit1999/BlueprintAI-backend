@@ -327,6 +327,10 @@ class FileService:
         """Batch polling for the upload page: one light query for N files."""
         return self._files.get_statuses(ids)
 
+    def project_of(self, file_id: str):
+        """(project_id, drawing_id) ownership fact for the role check."""
+        return self._files.project_of(file_id)
+
     def get_extraction(self, file_id: str) -> dict | None:
         record = self._files.get(file_id)
         if record is None:

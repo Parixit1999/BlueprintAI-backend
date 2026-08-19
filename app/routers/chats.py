@@ -1,10 +1,11 @@
 import json
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app import authz
 from app.dependencies import chat_service
 from app.exceptions import BlueprintError
 from app.services.chat_service import ChatService
@@ -57,20 +58,34 @@ def delete_session(session_id: str, service: Service):
 
 
 @router.post("/{session_id}/messages")
-def ask(session_id: str, body: AskRequest, service: Service):
-    return service.ask(session_id, body.question, body.project_id, body.file_id)
+def ask(request: Request, session_id: str, body: AskRequest, service: Service):
+    user = request.state.user
+    if body.project_id is not None:
+        authz.check_project(user, body.project_id)
+    return service.ask(
+        session_id, body.question, body.project_id, body.file_id,
+        allowed_project_ids=authz.allowed_project_ids(user),
+    )
 
 
 @router.post("/{session_id}/messages/stream")
-def ask_stream(session_id: str, body: AskRequest, service: Service):
+def ask_stream(request: Request, session_id: str, body: AskRequest, service: Service):
     """SSE stream: `meta` (user message + evidence, sent before generation
     starts), then `token` events as the answer is written, then `done` with
     the stored assistant message. Sync generator: FastAPI iterates it in the
     worker threadpool, so the blocking LLM stream stays off the event loop."""
 
+    user = request.state.user
+    if body.project_id is not None:
+        authz.check_project(user, body.project_id)
+    allowed = authz.allowed_project_ids(user)
+
     def sse():
         try:
-            for event, data in service.ask_stream(session_id, body.question, body.project_id, body.file_id):
+            for event, data in service.ask_stream(
+                session_id, body.question, body.project_id, body.file_id,
+                allowed_project_ids=allowed,
+            ):
                 yield f"event: {event}\ndata: {json.dumps(data)}\n\n"
         except BlueprintError as exc:
             yield f"event: error\ndata: {json.dumps({'detail': str(exc)})}\n\n"

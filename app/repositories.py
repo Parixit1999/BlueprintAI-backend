@@ -9,7 +9,7 @@ from psycopg_pool import ConnectionPool
 
 class FileRepository:
     # per-process cache for the archive-wide duplicate count (see list_paged)
-    _dup_count_cache: dict[str, Any] = {"count": 0, "at": 0.0, "thr": None}
+    _dup_count_cache: dict[str, Any] = {"count": 0, "at": 0.0, "key": None}
 
     def __init__(self, pool: ConnectionPool):
         self._pool = pool
@@ -439,32 +439,57 @@ class FileRepository:
                    LIMIT %s OFFSET %s""",
                 (similarity_threshold, *params, page_size, offset),
             ).fetchall()
-            # cheap whole-archive facts for the page chrome
+            # Facts for the page chrome. These ignore the active filters (they
+            # describe the archive, not the current view) but they must NOT
+            # ignore sheet access - otherwise the header offers to retry a
+            # failure, or the type filter lists a format, from a sheet this
+            # role can't open.
+            scope_sql, scope_params = (
+                ("(d.project_id = ANY(%s::uuid[]) OR f.drawing_id IS NULL)",
+                 [allowed_project_ids])
+                if allowed_project_ids is not None
+                else ("TRUE", [])
+            )
+            scoped_files = f"""
+                FROM files f LEFT JOIN drawings d ON d.id = f.drawing_id
+                WHERE {scope_sql}"""
             grand_total, pending_review, failed_count = conn.execute(
-                "SELECT count(*), count(*) FILTER (WHERE status = 'extracted'), "
-                "count(*) FILTER (WHERE status = 'failed') FROM files"
+                f"""SELECT count(*),
+                           count(*) FILTER (WHERE f.status = 'extracted'),
+                           count(*) FILTER (WHERE f.status = 'failed')
+                    {scoped_files}""",
+                tuple(scope_params),
             ).fetchone()
             types = [
                 r[0]
                 for r in conn.execute(
-                    "SELECT DISTINCT file_type FROM files ORDER BY file_type"
+                    f"SELECT DISTINCT f.file_type {scoped_files} ORDER BY f.file_type",
+                    tuple(scope_params),
                 ).fetchall()
             ]
             # The duplicate badge compares every embedding against every other
             # (O(n^2) vector math) - ~1.5s at a few hundred documents, and the
             # Documents page polls this endpoint. The count moves slowly, so
             # each process reuses it for 60s instead of recomputing per poll.
+            # cached per (threshold, sheet scope) - a restricted role must not
+            # be served the whole archive's count out of a shared slot
             now = time.monotonic()
+            cache_key = (
+                similarity_threshold,
+                None if allowed_project_ids is None else tuple(sorted(allowed_project_ids)),
+            )
             cache = FileRepository._dup_count_cache
-            if cache["at"] and now - cache["at"] < 60 and cache["thr"] == similarity_threshold:
+            if cache["at"] and now - cache["at"] < 60 and cache["key"] == cache_key:
                 duplicate_count = cache["count"]
             else:
                 duplicate_count = conn.execute(
-                    f"SELECT count(*) FROM files f WHERE {dup_exists}",
-                    (similarity_threshold,),
+                    f"""SELECT count(*)
+                        FROM files f LEFT JOIN drawings d ON d.id = f.drawing_id
+                        WHERE {scope_sql} AND {dup_exists}""",
+                    (*scope_params, similarity_threshold),
                 ).fetchone()[0]
                 FileRepository._dup_count_cache = {
-                    "count": duplicate_count, "at": now, "thr": similarity_threshold,
+                    "count": duplicate_count, "at": now, "key": cache_key,
                 }
 
         total = rows[0][13] if rows else 0

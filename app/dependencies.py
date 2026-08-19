@@ -1,4 +1,6 @@
 """FastAPI dependency providers - composition root for services."""
+from fastapi import Request
+
 from app.config import settings
 from app.db import pool
 from app.repositories import (
@@ -72,10 +74,16 @@ def render_service() -> RenderService:
     return RenderService(FileRepository(pool), get_storage())
 
 
-def chat_service() -> ChatService:
-    # Single global user until auth arrives; then resolve user_id per request.
+def chat_service(request: Request) -> ChatService:
+    # Chats belong to the person who had them: every session is created,
+    # listed, opened, and deleted under the signed-in user's id, so one
+    # person's conversations never appear in another's sidebar. The
+    # configured default is only a fallback for unauthenticated internal
+    # callers - the auth middleware means requests always carry a user.
+    user = getattr(request.state, "user", None)
+    user_id = str(user["id"]) if user else settings.default_user_id
     return ChatService(
-        ChatRepository(pool), query_service(), settings.default_user_id,
+        ChatRepository(pool), query_service(), user_id,
         ChunkRepository(pool), RegistryChunkRepository(pool),
     )
 

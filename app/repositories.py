@@ -1328,48 +1328,120 @@ class StatsRepository:
     def __init__(self, pool: ConnectionPool):
         self._pool = pool
 
-    def snapshot(self, allowed_project_ids: list[str] | None = None) -> dict[str, Any]:
+    def snapshot(
+        self,
+        allowed_project_ids: list[str] | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Everything the dashboard shows.
+
+        Two scopes apply, and every panel honours one of them:
+        - `allowed_project_ids` (None = the whole archive) limits the archive
+          counts to the sheets the role may see. Files with no drawing are
+          counted for everyone, exactly as the Documents list shows them.
+        - `user_id` (None = everyone) limits the chat panels to one person's
+          own questions - the dashboard reports your activity, not the team's.
+        """
+        # `%s::uuid[] IS NULL OR <col> = ANY(%s::uuid[])` keeps one SQL text
+        # for both scopes; psycopg adapts a Python None to a NULL array.
+        proj = allowed_project_ids
+        # the predicate stays parenthesised so callers can append their own
+        # AND clauses without OR/AND precedence swallowing the scope
+        files_scope = """
+            FROM files f LEFT JOIN drawings d ON d.id = f.drawing_id
+            WHERE (%s::uuid[] IS NULL
+                   OR f.drawing_id IS NULL
+                   OR d.project_id = ANY(%s::uuid[]))"""
+        chunks_scope = """
+            FROM chunks c
+                 JOIN files f ON f.id = c.source_file_id
+                 LEFT JOIN drawings d ON d.id = f.drawing_id
+            WHERE (%s::uuid[] IS NULL
+                   OR f.drawing_id IS NULL
+                   OR d.project_id = ANY(%s::uuid[]))"""
         with self._pool.connection() as conn:
             files_by_status = dict(
-                conn.execute("SELECT status, count(*) FROM files GROUP BY status").fetchall()
+                conn.execute(
+                    f"SELECT f.status, count(*) {files_scope} GROUP BY f.status",
+                    (proj, proj),
+                ).fetchall()
             )
             files_by_type = dict(
-                conn.execute("SELECT file_type, count(*) FROM files GROUP BY file_type").fetchall()
+                conn.execute(
+                    f"SELECT f.file_type, count(*) {files_scope} GROUP BY f.file_type",
+                    (proj, proj),
+                ).fetchall()
             )
-            chunks_total = conn.execute("SELECT count(*) FROM chunks").fetchone()[0]
+            chunks_total = conn.execute(
+                f"SELECT count(*) {chunks_scope}", (proj, proj)
+            ).fetchone()[0]
             chunks_by_confidence = dict(
-                conn.execute("SELECT confidence, count(*) FROM chunks GROUP BY confidence").fetchall()
+                conn.execute(
+                    f"SELECT c.confidence, count(*) {chunks_scope} GROUP BY c.confidence",
+                    (proj, proj),
+                ).fetchall()
             )
             corrected = conn.execute(
-                "SELECT count(*) FROM chunks WHERE verification_status = 'corrected'"
+                f"""SELECT count(*) {chunks_scope}
+                    AND c.verification_status = 'corrected'""",
+                (proj, proj),
             ).fetchone()[0]
-            sessions = conn.execute("SELECT count(*) FROM chat_sessions").fetchone()[0]
+            sessions = conn.execute(
+                """SELECT count(*) FROM chat_sessions
+                   WHERE %s::text IS NULL OR user_id = %s""",
+                (user_id, user_id),
+            ).fetchone()[0]
             questions = conn.execute(
-                "SELECT count(*) FROM chat_messages WHERE role = 'user'"
+                """SELECT count(*) FROM chat_messages m
+                        JOIN chat_sessions s ON s.id = m.session_id
+                   WHERE m.role = 'user'
+                     AND (%s::text IS NULL OR s.user_id = %s)""",
+                (user_id, user_id),
             ).fetchone()[0]
-            projects = conn.execute("SELECT count(*) FROM projects").fetchone()[0]
+            projects = conn.execute(
+                """SELECT count(*) FROM projects
+                   WHERE %s::uuid[] IS NULL OR id = ANY(%s::uuid[])""",
+                (proj, proj),
+            ).fetchone()[0]
             drawings = conn.execute(
-                "SELECT count(*) FROM drawings WHERE deleted_at IS NULL"
+                """SELECT count(*) FROM drawings
+                   WHERE deleted_at IS NULL
+                     AND (%s::uuid[] IS NULL OR project_id = ANY(%s::uuid[]))""",
+                (proj, proj),
             ).fetchone()[0]
-            sets = conn.execute("SELECT count(*) FROM drawing_sets").fetchone()[0]
+            sets = conn.execute(
+                """SELECT count(*) FROM drawing_sets
+                   WHERE %s::uuid[] IS NULL OR project_id = ANY(%s::uuid[])""",
+                (proj, proj),
+            ).fetchone()[0]
             # sheet totals from the registry, plus how many drawings still
             # have no count recorded (an actionable gap, not just a stat)
             sheets_total, sheets_missing = conn.execute(
                 """SELECT coalesce(sum(sheet_count), 0),
                           count(*) FILTER (WHERE sheet_count IS NULL)
-                   FROM drawings WHERE deleted_at IS NULL"""
+                   FROM drawings
+                   WHERE deleted_at IS NULL
+                     AND (%s::uuid[] IS NULL OR project_id = ANY(%s::uuid[]))""",
+                (proj, proj),
             ).fetchone()
             # distinct document pages the extractor has actually read - the
             # "how much of the archive has been processed" number
             pages_extracted = conn.execute(
-                "SELECT count(DISTINCT (source_file_id, page)) FROM chunks"
+                f"SELECT count(DISTINCT (c.source_file_id, c.page)) {chunks_scope}",
+                (proj, proj),
             ).fetchone()[0]
             unassigned = conn.execute(
                 "SELECT count(*) FROM files WHERE drawing_id IS NULL"
             ).fetchone()[0]
             feedback = dict(
                 conn.execute(
-                    "SELECT rating, count(*) FROM answer_feedback GROUP BY rating"
+                    """SELECT a.rating, count(*)
+                         FROM answer_feedback a
+                              JOIN chat_messages m ON m.id = a.message_id
+                              JOIN chat_sessions s ON s.id = m.session_id
+                        WHERE %s::text IS NULL OR s.user_id = %s
+                        GROUP BY a.rating""",
+                    (user_id, user_id),
                 ).fetchall()
             )
             # top projects by drawing count, for the dashboard breakdown
@@ -1386,19 +1458,25 @@ class StatsRepository:
             # last 14 calendar days (UTC), zero-filled client-agnostically here
             uploads_by_day = dict(
                 conn.execute(
-                    """SELECT date_trunc('day', created_at)::date, count(*)
-                       FROM files
-                       WHERE created_at >= date_trunc('day', now()) - interval '13 days'
-                       GROUP BY 1"""
+                    f"""SELECT date_trunc('day', f.created_at)::date, count(*)
+                        {files_scope}
+                          AND f.created_at >= date_trunc('day', now())
+                                               - interval '13 days'
+                        GROUP BY 1""",
+                    (proj, proj),
                 ).fetchall()
             )
             questions_by_day = dict(
                 conn.execute(
-                    """SELECT date_trunc('day', created_at)::date, count(*)
-                       FROM chat_messages
-                       WHERE role = 'user'
-                         AND created_at >= date_trunc('day', now()) - interval '13 days'
-                       GROUP BY 1"""
+                    """SELECT date_trunc('day', m.created_at)::date, count(*)
+                       FROM chat_messages m
+                            JOIN chat_sessions s ON s.id = m.session_id
+                       WHERE m.role = 'user'
+                         AND m.created_at >= date_trunc('day', now())
+                                              - interval '13 days'
+                         AND (%s::text IS NULL OR s.user_id = %s)
+                       GROUP BY 1""",
+                    (user_id, user_id),
                 ).fetchall()
             )
             today = conn.execute("SELECT date_trunc('day', now())::date").fetchone()[0]

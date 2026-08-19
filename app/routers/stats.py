@@ -14,6 +14,10 @@ Repo = Annotated[StatsRepository, Depends(stats_repository)]
 @router.get("")
 def stats(request: Request, repo: Repo):
     # Sync def: DB query runs in FastAPI's worker threadpool, off the event
-    # loop. Global counts stay global for every dashboard holder (they leak
-    # magnitudes, not content); the per-project panel is role-scoped.
-    return repo.snapshot(authz.allowed_project_ids(request.state.user))
+    # loop. The dashboard describes what THIS person can see: archive counts
+    # cover the sheets their role allows, chat counts cover their own
+    # questions. Admins and all-sheets roles get the whole archive.
+    user = request.state.user
+    return repo.snapshot(
+        authz.allowed_project_ids(user), user_id=str(user["id"])
+    )

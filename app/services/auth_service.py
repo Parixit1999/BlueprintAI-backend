@@ -158,25 +158,32 @@ class AuthService:
         return name, pages, bool(all_sheets), project_ids
 
     def create_role(
-        self, name: str, pages: list[str], all_sheets: bool, project_ids: list[str]
+        self, name: str, pages: list[str], all_sheets: bool, project_ids: list[str],
+        can_edit: bool = True,
     ) -> dict:
         name, pages, all_sheets, project_ids = self._validate_role(
             name, pages, all_sheets, project_ids
         )
-        role_id = self._repo.create_role(name, pages, all_sheets, project_ids)
+        role_id = self._repo.create_role(
+            name, pages, all_sheets, project_ids, bool(can_edit)
+        )
         return {"role_id": role_id, "name": name, "pages": pages,
-                "all_sheets": all_sheets, "project_ids": project_ids}
+                "all_sheets": all_sheets, "project_ids": project_ids,
+                "can_edit": bool(can_edit)}
 
     def update_role(
         self, role_id: str, name: str, pages: list[str], all_sheets: bool,
-        project_ids: list[str],
+        project_ids: list[str], can_edit: bool = True,
     ) -> dict:
         name, pages, all_sheets, project_ids = self._validate_role(
             name, pages, all_sheets, project_ids, existing_role_id=role_id
         )
-        self._repo.update_role(role_id, name, pages, all_sheets, project_ids)
+        self._repo.update_role(
+            role_id, name, pages, all_sheets, project_ids, bool(can_edit)
+        )
         return {"role_id": role_id, "name": name, "pages": pages,
-                "all_sheets": all_sheets, "project_ids": project_ids}
+                "all_sheets": all_sheets, "project_ids": project_ids,
+                "can_edit": bool(can_edit)}
 
     def delete_role(self, role_id: str) -> None:
         self._repo.delete_role(role_id)

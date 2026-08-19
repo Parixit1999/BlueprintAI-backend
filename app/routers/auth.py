@@ -43,6 +43,7 @@ class RoleRequest(BaseModel):
     pages: list[str] = []
     all_sheets: bool = False
     project_ids: list[str] = []
+    can_edit: bool = True  # false = view-only role
 
 
 def _bearer(request: Request) -> str | None:
@@ -79,6 +80,7 @@ def me(request: Request):
             "name": role["name"],
             "pages": role["pages"],
             "all_sheets": role["all_sheets"],
+            "can_edit": role.get("can_edit", True),
         },
     }
 
@@ -116,7 +118,9 @@ def list_roles(svc: AuthService = Depends(auth_service)):
 
 @router.post("/roles", status_code=201)
 def create_role(body: RoleRequest, svc: AuthService = Depends(auth_service)):
-    return svc.create_role(body.name, body.pages, body.all_sheets, body.project_ids)
+    return svc.create_role(
+        body.name, body.pages, body.all_sheets, body.project_ids, body.can_edit
+    )
 
 
 @router.patch("/roles/{role_id}")
@@ -124,7 +128,8 @@ def update_role(
     role_id: str, body: RoleRequest, svc: AuthService = Depends(auth_service)
 ):
     return svc.update_role(
-        role_id, body.name, body.pages, body.all_sheets, body.project_ids
+        role_id, body.name, body.pages, body.all_sheets, body.project_ids,
+        body.can_edit,
     )
 
 

@@ -199,6 +199,10 @@ def _ensure_auth_schema() -> None:
                    PRIMARY KEY (role_id, project_id)
                )"""
         )
+        # one switch per role: editors change things, viewers only look
+        conn.execute(
+            "ALTER TABLE roles ADD COLUMN IF NOT EXISTS can_edit boolean NOT NULL DEFAULT true"
+        )
         conn.execute(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS role_id uuid REFERENCES roles(id) ON DELETE SET NULL"
         )

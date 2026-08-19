@@ -1669,7 +1669,7 @@ class AuthRepository:
                 "SELECT u.id, u.username, u.full_name, u.email, u.is_admin, "
                 "r.id, r.name, r.pages, r.all_sheets, "
                 "(SELECT array_agg(rp.project_id::text) FROM role_projects rp "
-                " WHERE rp.role_id = r.id) "
+                " WHERE rp.role_id = r.id), r.can_edit "
                 "FROM auth_tokens t "
                 "JOIN users u ON u.id = t.user_id "
                 "LEFT JOIN roles r ON r.id = u.role_id "
@@ -1690,6 +1690,7 @@ class AuthRepository:
                 "pages": list(row[7] or []),
                 "all_sheets": row[8],
                 "project_ids": list(row[9] or []),
+                "can_edit": row[10],
             },
         }
 
@@ -1701,7 +1702,7 @@ class AuthRepository:
                 "SELECT r.id, r.name, r.pages, r.all_sheets, r.created_at, "
                 "(SELECT count(*) FROM users u WHERE u.role_id = r.id), "
                 "(SELECT array_agg(rp.project_id::text) FROM role_projects rp "
-                " WHERE rp.role_id = r.id) "
+                " WHERE rp.role_id = r.id), r.can_edit "
                 "FROM roles r ORDER BY r.created_at"
             ).fetchall()
         return [
@@ -1713,6 +1714,7 @@ class AuthRepository:
                 "created_at": r[4].isoformat(),
                 "user_count": r[5],
                 "project_ids": list(r[6] or []),
+                "can_edit": r[7],
             }
             for r in rows
         ]
@@ -1725,12 +1727,14 @@ class AuthRepository:
         return None if row is None else {"role_id": str(row[0]), "name": row[1]}
 
     def create_role(
-        self, name: str, pages: list[str], all_sheets: bool, project_ids: list[str]
+        self, name: str, pages: list[str], all_sheets: bool, project_ids: list[str],
+        can_edit: bool = True,
     ) -> str:
         with self._pool.connection() as conn:
             row = conn.execute(
-                "INSERT INTO roles (name, pages, all_sheets) VALUES (%s, %s, %s) RETURNING id",
-                (name, pages, all_sheets),
+                "INSERT INTO roles (name, pages, all_sheets, can_edit) "
+                "VALUES (%s, %s, %s, %s) RETURNING id",
+                (name, pages, all_sheets, can_edit),
             ).fetchone()
             role_id = str(row[0])
             for pid in project_ids:
@@ -1748,11 +1752,13 @@ class AuthRepository:
         pages: list[str],
         all_sheets: bool,
         project_ids: list[str],
+        can_edit: bool = True,
     ) -> None:
         with self._pool.connection() as conn:
             conn.execute(
-                "UPDATE roles SET name = %s, pages = %s, all_sheets = %s WHERE id = %s",
-                (name, pages, all_sheets, role_id),
+                "UPDATE roles SET name = %s, pages = %s, all_sheets = %s, "
+                "can_edit = %s WHERE id = %s",
+                (name, pages, all_sheets, can_edit, role_id),
             )
             # replace the sheet list wholesale - it is tiny and explicit
             conn.execute("DELETE FROM role_projects WHERE role_id = %s", (role_id,))

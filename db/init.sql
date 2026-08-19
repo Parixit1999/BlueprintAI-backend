@@ -171,6 +171,7 @@ CREATE TABLE IF NOT EXISTS roles (
     name       text NOT NULL UNIQUE,
     pages      text[] NOT NULL DEFAULT '{}',
     all_sheets boolean NOT NULL DEFAULT false,
+    can_edit   boolean NOT NULL DEFAULT true,   -- false = view-only role
     created_at timestamptz NOT NULL DEFAULT now()
 );
 

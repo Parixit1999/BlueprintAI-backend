@@ -94,6 +94,20 @@ def user_pages(user: dict) -> frozenset[str]:
     return frozenset(role["pages"]) if role else frozenset()
 
 
+# Non-GET requests that a VIEW-ONLY role may still make: reads that happen
+# to be POSTs (bulk status polling needs a body), and chat - asking questions
+# about the archive is consuming data, not changing it.
+_VIEWER_WRITE_EXEMPT = ("/api/files/statuses", "/api/query", "/api/chats")
+
+
+def _is_write(method: str, path: str) -> bool:
+    if method in ("GET", "HEAD", "OPTIONS"):
+        return False
+    return not any(
+        path == p or path.startswith(p + "/") for p in _VIEWER_WRITE_EXEMPT
+    )
+
+
 def check_page(user: dict, method: str, path: str) -> str | None:
     """The middleware page gate: a human-readable denial, or None to pass.
     Default-deny: an /api path no rule recognizes is refused rather than
@@ -105,18 +119,22 @@ def check_page(user: dict, method: str, path: str) -> str | None:
         return None
     if req is _ADMIN:
         return "Only administrators can manage people and roles."
-    if user.get("role") is None:
+    role = user.get("role")
+    if role is None:
         return ("Your account doesn't have access yet. "
                 "Ask an administrator to assign you a role.")
     if req is None:
         return "Your role doesn't include access to this."
     granted = user_pages(user)
-    if granted & req:
-        return None
-    label = _PAGE_LABEL.get(min(req), "this")
-    if len(req) == 1:
-        label = _PAGE_LABEL[next(iter(req))]
-    return f"Your role doesn't include access to {label}."
+    if not (granted & req):
+        label = _PAGE_LABEL.get(min(req), "this")
+        if len(req) == 1:
+            label = _PAGE_LABEL[next(iter(req))]
+        return f"Your role doesn't include access to {label}."
+    # page granted; a view-only role may still not CHANGE anything
+    if not role.get("can_edit", True) and _is_write(method, path):
+        return "Your role is view-only - it can't make changes."
+    return None
 
 
 def allowed_project_ids(user: dict) -> list[str] | None:
